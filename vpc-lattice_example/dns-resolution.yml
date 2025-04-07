@@ -2,49 +2,41 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: DNS Resolution - Example
 
 Parameters:
-  HostedZoneName:
+  PrivateHostedZoneName:
     Type: String
-    Description: Private Hosted Zone Name (for External Connectivity VPC resolution)
+    Description: Private Hosted Zone Name (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneId
+    Default: "EMPTY"
+  PrivateHostedZoneId:
+    Type: String
+    Description: Private Hosted Zone ID (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneName
+    Default: "EMPTY"
   CustomDomainName:
     Type: String
     Description: Custom Domain Name (VPC Lattice service)
   VPCLatticeDomainName:
     Type: String
     Description: VPC Lattice service generated Domain Name
-  NLBExternalDomainName:
+  VPCLatticeHostedZoneId:
     Type: String
-    Description: Network Load Balancer domain name (Public Access)
-    Default: " "
-  NLBInternalDomainName:
+    Description: VPC Lattice service generated Hosted Zone ID
+  NLBDomainName:
     Type: String
-    Description: Network Load Balancer domain name (Hybrid/Cross-Region Access)
-    Default: " "
+    Description: Network Load Balancer domain name
   VpcId:
     Type: String
-    Description: VPC ID (External Connectivity)
+    Description: VPC ID (Ingress VPC)
   PublicHostedZone:
     Type: String
-    Description: Amazon Route 53 Public Hosted Zone ID (Public Access)
-    Default: "EMPTY"
-  PrivateHostedZone:
-    Type: String
-    Description: Amazon Route 53 Private Hosted Zone ID (Hybrid/Cross-Region Access)
-    Default: "EMPTY"
+    Description: Amazon Route 53 Public Hosted Zone ID
 
 Conditions:
-  PublicResolution: !Not
-    - !Equals
-      - !Ref PublicHostedZone
-      - "EMPTY"
-  PrivateResolution: !Not
-    - !Equals
-      - !Ref PrivateHostedZone
-      - "EMPTY"
+  CreatePrivateHostedZone: !And
+    - !Not [!Equals [!Ref PrivateHostedZoneName, "EMPTY"]]
+    - !Equals [!Ref PrivateHostedZoneId, "EMPTY"]
 
 Resources:
   # ---------- PUBLIC RESOLUTION ----------
   PublicCNAMERecord:
-    Condition: PublicResolution
     Type: AWS::Route53::RecordSet
     Properties:
       HostedZoneId: !Ref PublicHostedZone
@@ -52,35 +44,28 @@ Resources:
       Type: CNAME
       TTL: 300
       ResourceRecords:
-        - !Ref NLBExternalDomainName  
-
-  # ---------- HYBRID/CROSS-REGION RESOLUTION ----------
-  PrivateCNAMERecord:
-    Condition: PrivateResolution
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref PrivateHostedZone
-      Name: !Ref CustomDomainName
-      Type: CNAME
-      TTL: 300
-      ResourceRecords:
-        - !Ref NLBInternalDomainName  
+        - !Ref NLBDomainName  
 
   # ---------- VPC RESOLUTION ----------
   VPCHostedZone:
+    Condition: CreatePrivateHostedZone
     Type: AWS::Route53::HostedZone
     Properties:
-      Name: !Ref HostedZoneName
+      Name: !Ref PrivateHostedZoneName
       VPCs:
         - VPCId: !Ref VpcId
           VPCRegion: !Ref "AWS::Region"
   
-  VpcCNAMERecord:
+  VpcALIASRecord:
     Type: AWS::Route53::RecordSet
     Properties:
-      HostedZoneId: !Ref VPCHostedZone
+      HostedZoneId: !If
+        - CreatePrivateHostedZone
+        - !Ref VPCHostedZone
+        - !Ref PrivateHostedZoneId
       Name: !Ref CustomDomainName
-      Type: CNAME
-      TTL: 300
-      ResourceRecords:
-        - !Ref VPCLatticeDomainName  
+      Type: A
+      AliasTarget:
+        HostedZoneId: !Ref VPCLatticeHostedZoneId
+        DNSName: !Ref VPCLatticeDomainName
+        EvaluateTargetHealth: false

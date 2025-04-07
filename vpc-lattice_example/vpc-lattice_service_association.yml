@@ -1,7 +1,10 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: VPC Lattice service - Example
+Description: VPC Lattice service - Example (VPC association)
 
 Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID (Ingress VPC)
   CustomDomainName:
     Type: String
     Description: Custom Domain Name (VPC Lattice service)
@@ -10,11 +13,11 @@ Parameters:
     Description: Certificate ARN (for HTTPS connection)
   
 Resources:
-  # ---------- VPC LATTICE RESOURCES ----------
+  # ---------- SERVICE NETWORK ----------
   VPCLatticeServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
     Properties:
-      Name: vpc-lattice-service-network
+      Name: vpc-lattice-service-network-association
       AuthType: AWS_IAM
   
   VPCLatticeServiceNetworkAuthPolicy:
@@ -27,11 +30,18 @@ Resources:
             Principal: '*'
             Action: '*'
             Resource: '*'
+  
+  VPCLatticeServiceNetworkVPCAssociation:
+    Type: AWS::VpcLattice::ServiceNetworkVpcAssociation
+    Properties:
+      ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
+      VpcIdentifier: !Ref VpcId
 
+  # ---------- SERVICE ----------
   VPCLatticeService:
     Type: AWS::VpcLattice::Service
     Properties:
-      Name: vpc-lattice-service
+      Name: vpc-lattice-service-association
       AuthType: AWS_IAM 
       CustomDomainName: !Ref CustomDomainName
       CertificateArn: !Ref CertificateArn
@@ -46,22 +56,52 @@ Resources:
             Principal: '*'
             Action: '*'
             Resource: '*'
-
-  VPCLatticeLambdaTarget:
-    Type: AWS::VpcLattice::TargetGroup
-    Properties:
-      Name: lambda-target
-      Type: LAMBDA
-      Targets:
-        - Id: !GetAtt LambdaFunction.Arn
   
   VPCLatticeServiceAssociation:
     Type: AWS::VpcLattice::ServiceNetworkServiceAssociation
     Properties:
       ServiceIdentifier: !Ref VPCLatticeService
       ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
+
+  # ---------- TARGET GROUP ----------
+  VPCLatticeLambdaTarget:
+    Type: AWS::VpcLattice::TargetGroup
+    Properties:
+      Name: lambda-target-association
+      Type: LAMBDA
+      Targets:
+        - Id: !GetAtt LambdaFunction.Arn
+
+  # ---------- LISTENERS ----------
+  # HTTP
+  VPCLatticeServiceListenerHTTP:
+    Type: AWS::VpcLattice::Listener
+    Properties:
+      DefaultAction: 
+        Forward:
+          TargetGroups:
+            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
+              Weight: 1
+      Name: http-80
+      Port: 80
+      Protocol: HTTP
+      ServiceIdentifier: !Ref VPCLatticeService
+
+  # HTTPS
+  VPCLatticeServiceListenerHTTPS:
+    Type: AWS::VpcLattice::Listener
+    Properties:
+      DefaultAction: 
+        Forward:
+          TargetGroups:
+            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
+              Weight: 1
+      Name: http-443
+      Port: 443
+      Protocol: HTTPS
+      ServiceIdentifier: !Ref VPCLatticeService
   
-  # ---------- LAMBDA FUNCTION ----------
+  # ---------- LAMBDA FUNCTION ----------
   LambdaFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -86,8 +126,7 @@ Resources:
   LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Description: "Obtaining the AWS Region where the Lambda function is located."
-      Runtime: python3.10
+      Runtime: python3.13
       Timeout: 10
       Role: !GetAtt LambdaFunctionRole.Arn
       Handler: index.lambda_handler
@@ -111,7 +150,7 @@ Resources:
                   log.info("Received event: %s", json.dumps(event))
 
                   # Return value
-                  response = region
+                  response = "Hello from " + region + ". Accessed via VPC association.\n"
                   return {
                     "statusCode": 200,
                     "statusDescription": "200 OK",
@@ -128,11 +167,5 @@ Resources:
                     "statusDescription": "500 Internal Server Error",
                     "body": "Server error - check lambda logs\n"
                   }
-
-Outputs:
-  VPCLatticeServiceNetwork:
-    Value: !Ref VPCLatticeServiceNetwork
-    Description: VPC Lattice service network
-  VPCLatticeServiceGeneratedDomainName:
-    Value: !GetAtt VPCLatticeService.DnsEntry.DomainName
-    Description: VPC Lattice service generated domain name
+  
+  

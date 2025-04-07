@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: VPC Lattice service - Example (VPC service network endpoint)
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID (Ingress VPC)
+  VpcSubnetId1:
+    Type: String
+    Description: VPC Subnet 1 (Ingress VPC)
+  VpcSubnetId2:
+    Type: String
+    Description: VPC Subnet 2 (Ingress VPC)
+  VpcSubnetId3:
+    Type: String
+    Description: VPC Subnet 3 (Ingress VPC)
+  CustomDomainName:
+    Type: String
+    Description: Custom Domain Name (VPC Lattice service)
+  CertificateArn:
+    Type: String
+    Description: Certificate ARN (for HTTPS connection)
+  
+Resources:
+  # ---------- SERVICE NETWORK ----------
+  VPCLatticeServiceNetwork:
+    Type: AWS::VpcLattice::ServiceNetwork
+    Properties:
+      Name: vpc-lattice-service-network-endpoint
+      AuthType: AWS_IAM
+  
+  VPCLatticeServiceNetworkAuthPolicy:
+    Type: AWS::VpcLattice::AuthPolicy
+    Properties:
+      ResourceIdentifier: !Ref VPCLatticeServiceNetwork
+      Policy:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+  
+  VPCLatticeServiceNetworkEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: ServiceNetwork
+      IpAddressType: dualstack
+      SecurityGroupIds: 
+        - !Ref EndpointSecurityGroup
+      ServiceNetworkArn: !GetAtt VPCLatticeServiceNetwork.Arn
+      SubnetIds: 
+        - !Ref VpcSubnetId1
+        - !Ref VpcSubnetId2
+        - !Ref VpcSubnetId3
+      Tags: 
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Sub sn-endpoint
+              - !Ref AWS::StackName
+  
+  EndpointSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: VPC Endpoint Security Group (service network)
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: Ingress rule for HTTPS
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          Description: Ingress rule for HTTP
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Sub sn-endpoint-sg
+              - !Ref AWS::StackName
+  
+  # ---------- SERVICE ----------
+  VPCLatticeService:
+    Type: AWS::VpcLattice::Service
+    Properties:
+      Name: vpc-lattice-service-endpoint
+      AuthType: AWS_IAM 
+      CustomDomainName: !Ref CustomDomainName
+      CertificateArn: !Ref CertificateArn
+  
+  VPCLatticeServiceAuthPolicy:
+    Type: AWS::VpcLattice::AuthPolicy
+    Properties:
+      ResourceIdentifier: !Ref VPCLatticeService
+      Policy:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+  
+  VPCLatticeServiceAssociation:
+    Type: AWS::VpcLattice::ServiceNetworkServiceAssociation
+    Properties:
+      ServiceIdentifier: !Ref VPCLatticeService
+      ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
+
+  # ---------- TARGET GROUP ----------
+  VPCLatticeLambdaTarget:
+    Type: AWS::VpcLattice::TargetGroup
+    Properties:
+      Name: lambda-target-endpoint
+      Type: LAMBDA
+      Targets:
+        - Id: !GetAtt LambdaFunction.Arn
+
+  # ---------- LISTENERS ----------
+  # HTTP
+  VPCLatticeServiceListenerHTTP:
+    Type: AWS::VpcLattice::Listener
+    Properties:
+      DefaultAction: 
+        Forward:
+          TargetGroups:
+            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
+              Weight: 1
+      Name: http-80
+      Port: 80
+      Protocol: HTTP
+      ServiceIdentifier: !Ref VPCLatticeService
+
+  # HTTPS
+  VPCLatticeServiceListenerHTTPS:
+    Type: AWS::VpcLattice::Listener
+    Properties:
+      DefaultAction: 
+        Forward:
+          TargetGroups:
+            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
+              Weight: 1
+      Name: http-443
+      Port: 443
+      Protocol: HTTPS
+      ServiceIdentifier: !Ref VPCLatticeService
+  
+  # ---------- LAMBDA FUNCTION ----------
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${LambdaFunction}
+      RetentionInDays: 7
+  
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Timeout: 10
+      Role: !GetAtt LambdaFunctionRole.Arn
+      Handler: index.lambda_handler
+      Code: 
+        ZipFile: |-
+          import json
+          import logging
+          import random
+          import string
+          import os
+          import boto3
+
+          log = logging.getLogger("handler")
+          log.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              try:
+                  # We obtain the AWS Region where the Lambda function is located
+                  region = os.environ.get('AWS_REGION')
+                  # We log the event received
+                  log.info("Received event: %s", json.dumps(event))
+
+                  # Return value
+                  response = "Hello from " + region + ". Accessed via VPC service network endpoint.\n"
+                  return {
+                    "statusCode": 200,
+                    "statusDescription": "200 OK",
+                    "body": response
+                  }
+
+              except Exception as e:
+                  log.exception("whoops")
+                  log.info(e)
+
+                  # Return exception error
+                  return {
+                    "statusCode": 500,
+                    "statusDescription": "500 Internal Server Error",
+                    "body": "Server error - check lambda logs\n"
+                  }
