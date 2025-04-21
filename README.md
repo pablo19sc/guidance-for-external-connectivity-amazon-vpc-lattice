@@ -2,7 +2,7 @@
 
 This Guidance builds a [Serverless](https://aws.amazon.com/serverless/) proxy enabling [Amazon VPC Lattice](https://aws.amazon.com/vpc/lattice/) services to be reached by consumers from non-trusted external locations from AWS.
 
-![image](./img/guidance-diagram.png)
+![image](./img/guidance-diagram-v2.png)
 
 ## Table of Content
 
