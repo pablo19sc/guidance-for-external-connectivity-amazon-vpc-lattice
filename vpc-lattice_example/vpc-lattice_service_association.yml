@@ -167,5 +167,12 @@ Resources:
                     "statusDescription": "500 Internal Server Error",
                     "body": "Server error - check lambda logs\n"
                   }
-  
+
+Outputs:
+  VPCLatticeServiceDomainName:
+    Description: VPC Lattice service domain name
+    Value: !GetAtt VPCLatticeService.DnsEntry.DomainName
+  VPCLatticeServiceHostedZoneId:
+    Description: VPC Lattice service hosted zone ID
+    Value: !GetAtt VPCLatticeService.DnsEntry.HostedZoneId
   

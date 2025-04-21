@@ -218,3 +218,11 @@ Resources:
                     "statusDescription": "500 Internal Server Error",
                     "body": "Server error - check lambda logs\n"
                   }
+
+Outputs:
+  EndpointId:
+    Description: VPC Endpoint ID
+    Value: !GetAtt VPCLatticeServiceNetworkEndpoint.Id
+  VPCLatticeServiceArn:
+    Description: VPC Lattice Service ARN
+    Value: !GetAtt VPCLatticeService.Arn

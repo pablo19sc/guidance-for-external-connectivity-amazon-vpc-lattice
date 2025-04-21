@@ -22,6 +22,9 @@ Parameters:
   NLBDomainName:
     Type: String
     Description: Network Load Balancer domain name
+  NLBHostedZoneId:
+    Type: String
+    Description: Network Load Balancer hosted zone ID
   VpcId:
     Type: String
     Description: VPC ID (Ingress VPC)
@@ -36,15 +39,16 @@ Conditions:
 
 Resources:
   # ---------- PUBLIC RESOLUTION ----------
-  PublicCNAMERecord:
+  PublicALIASRecord:
     Type: AWS::Route53::RecordSet
     Properties:
       HostedZoneId: !Ref PublicHostedZone
       Name: !Ref CustomDomainName
-      Type: CNAME
-      TTL: 300
-      ResourceRecords:
-        - !Ref NLBDomainName  
+      Type: A
+      AliasTarget:
+        DNSName: !Ref NLBDomainName
+        HostedZoneId: !Ref NLBHostedZoneId
+        EvaluateTargetHealth: false
 
   # ---------- VPC RESOLUTION ----------
   VPCHostedZone:
