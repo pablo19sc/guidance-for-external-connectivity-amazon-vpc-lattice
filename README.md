@@ -131,8 +131,8 @@ The stack deploys the following resources:
 
 ## Deployment Validation
 
-* Open the AWS CloudFormation console and verify that the following stack is deployed without errors: **guidance-vpclattice-external**.
-* Move to the Amazon Elastic Container Service console. A cluster with the name **guidance-vpclattice-external-NginxCluster-%random%** should have been created with 3 running tasks.
+* Open the AWS CloudFormation console and verify that the stack is deployed without errors.
+* Move to the Amazon Elastic Container Service console. A cluster with the name **{STACK_NAME}-NginxCluster-%random%** should have been created with 3 running tasks.
 
 ## Running the Guidance
 
