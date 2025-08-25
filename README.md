@@ -83,10 +83,10 @@ These deployment instructions are optimized to best work on Linux ARM64 instance
     * [Amazon Elastic Container Registry](https://aws.amazon.com/ecr/) (ECR) is used to store the container images - you can check supported Regions [here](https://docs.aws.amazon.com/general/latest/gr/ecr.html) page.
     * [AWS CodeBuild](https://aws.amazon.com/codebuild/) is used to build and push the container image to Amazon ECR - you can check supported Regions [here](https://docs.aws.amazon.com/general/latest/gr/codebuild.html)
 
-### VPC Lattice resources
+### VPC Lattice infrastructure
 
-* This Guidance provides access to VPC Lattice services, but **it does not create any VPC Lattice resources**. 
-* You can provide access to several VPC Lattice service networks from the ingress VPC deployed in this Guidance by using either a [VPC Lattice service network association](https://docs.aws.amazon.com/vpc-lattice/latest/ug/service-network-associations.html) (1 per VPC), or several [VPC Lattice service network endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/access-with-service-network-endpoint.html). **The Guidance does not create any of these resources**.
+* This Guidance provides access to VPC Lattice services, but **it does not create any VPC Lattice assets**. 
+* You can provide access to several VPC Lattice service networks from the ingress VPC deployed in this Guidance by using either a [VPC Lattice service network association](https://docs.aws.amazon.com/vpc-lattice/latest/ug/service-network-associations.html) (1 per VPC), or several [VPC Lattice service network endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/access-with-service-network-endpoint.html). **The Guidance does not create any of these assets**.
   * When using service network endpoints, please check carefully the pre-requisites needed for the subnets where you place them - mainly for IPv4.
 * You can use the example in the *vpc-lattice_example* folder (`vpc-lattice_service.yaml`) to test end-to-end service consumption with the Guidance.
 
@@ -125,7 +125,7 @@ The stack deploys the following resources:
     * Amazon ECR for storing container images.
     * AWS CodeBuild environment for building containers that run an open-source version of [NGINX](https://www.nginx.com/).
 
-**NOTE** When deploying ECS for the first time, a ServiceLink Role is created for you. If you experience a stack deployment failure due to this Role not being created in time, clean the failed stack by deleting it then re-run the pipeline.
+**NOTE** When deploying ECS for the first time, a ServiceLink Role is created for you. If you experience a stack deployment failure due to this Role not being created in time, clean the failed stack by deleting it then re-deploying.
 
 2. To consume the VPC Lattice services, you will need to configure DNS resolution.
 
@@ -142,7 +142,7 @@ Once the Guidance has been deployed you should be able to perform a simple curl 
 curl https://yourvpclatticeservice.name
 ```
 
-If you have enabled your VPC Lattice service or service network for authorisation, then you will need to sign your requests to the endpoint in the **same region** that you have deployed the stack in -  the following example using the **--aws-sigv4** switch with curl demonstrates how to do this:
+If you have enabled your VPC Lattice service or service network for authorization, then you will need to sign your requests to the endpoint in the **same region** that you have deployed the stack in -  the following example using the **--aws-sigv4** switch with curl demonstrates how to do this:
 
 ```
 curl https://yourvpclatticeservice.name \
@@ -301,7 +301,7 @@ For this Guidance, we consider the following design elements and constraints:
 * VPC Lattice will provide authentication and authorization. The VPC Lattice service network and/or services should continue to function with authN/Z policies defined against them to ensure principals are who they say they are, and their actions are permitted.
 * The Guidance will make use of a fleet of lightweight open-source NGINX proxies running as ECS tasks. The entry point to this fleet will be an external NLB.
 * The Guidance will perform TCP-proxying for TLS connections and pass through connections to VPC Lattice (avoids certificate management between the provider and ingress provider) reading SNI fields for dynamic endpoint lookup.
-* The Guidance will perform HTTP proxying for non TLS connections by reading host header fields for dynamic endpoint lookup.
+* The Guidance will perform HTTP proxying for non-TLS connections by reading host header fields for dynamic endpoint lookup.
 * The recommended and common pattern when creating a VPC Lattice service is to use custom domains. Therefore, now we can make use of several Route 53 hosted zones to have a different DNS resolution depending the location of the consumer (external users or the proxy).
 
 ## License
@@ -314,5 +314,5 @@ See [CONTRIBUTING](CONTRIBUTING.md) for more information.
 
 ## Authors
 
-* Adam Palmer, Principal Network Specialist Solutions Architect, AWS
 * Pablo Sánchez Carmona, Senior Network Specialist Solutions Architect, AWS
+* Adam Palmer, Principal TPM, Kuiper
