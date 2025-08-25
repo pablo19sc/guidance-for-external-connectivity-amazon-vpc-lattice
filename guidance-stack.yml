@@ -620,8 +620,7 @@ Resources:
             Value: !Ref 'AWS::AccountId'
       Source:
         Type: GITHUB
-        #Location: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice.git
-        Location: https://github.com/pablo19sc/guidance-for-external-connectivity-amazon-vpc-lattice.git
+        Location: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice.git
         BuildSpec: |
           version: 0.2
           phases:
