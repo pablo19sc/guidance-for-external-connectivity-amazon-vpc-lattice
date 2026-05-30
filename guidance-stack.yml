@@ -41,6 +41,9 @@ Conditions:
   Ipv6Provided: !Not [!Equals [!Ref AllowedIPv6Block, EMPTY]]
 
 Mappings:
+  # Maps each logical subnet name to its index (0-8) into the nine /24 blocks that
+  # !Cidr carves out of VpcCidr, giving every subnet a deterministic, non-overlapping
+  # range. The same index selects the matching IPv6 /64 from the VPC's /56.
   SubnetCIDR:
     Position: 
       PublicSubneta: 0
@@ -52,6 +55,10 @@ Mappings:
       EndpointSubneta: 6
       EndpointSubnetb: 7
       EndpointSubnetc: 8
+  # Short names for the AWS service suffix of each interface endpoint; the full
+  # ServiceName (com.amazonaws.<region>.<suffix>) is assembled where the endpoints
+  # are created. These are the endpoints Fargate needs to pull images, ship logs,
+  # and support ECS Exec without a NAT gateway.
   Endpoint:
     Type:
       ECRDKR: ecr.dkr
@@ -111,6 +118,8 @@ Resources:
             Properties:
               VpcId: !Ref VPC
               AvailabilityZone: !Sub ${AWS::Region}${AvailabilityZone}
+              # IPv4: split VpcCidr into 9 equal blocks and take this subnet's slot.
+              # IPv6: split the VPC's Amazon-provided /56 into /64s and take the same slot.
               CidrBlock: !Select [!FindInMap [SubnetCIDR, Position, 'Fn::Sub': '${SubnetType}Subnet${AvailabilityZone}'], !Cidr [!Ref VpcCidr, 9, 8 ]]
               Ipv6CidrBlock: !Select [!FindInMap [SubnetCIDR, Position, 'Fn::Sub': '${SubnetType}Subnet${AvailabilityZone}'], !Cidr [!Select [0, !GetAtt VPC.Ipv6CidrBlocks], 9, 64 ]]
               Tags:
@@ -187,6 +196,8 @@ Resources:
           VpcEndpointType: Interface
           VpcId: !Ref VPC
 
+  # ECR stores image layers in S3, so pulling images needs an S3 path. A gateway
+  # endpoint (route-table based, no ENI/hourly cost) covers it without a NAT gateway.
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties: 
@@ -308,6 +319,8 @@ Resources:
   ProxyNLBTGroupHTTPS:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
+      # Aggressive health checks (5s interval, 2s timeout, 3 checks) so an unhealthy
+      # task is rotated out, and a new one brought in, quickly under autoscaling.
       HealthCheckIntervalSeconds: 5
       HealthCheckTimeoutSeconds: 2
       HealthyThresholdCount: 3
@@ -315,6 +328,9 @@ Resources:
       Port: 443
       Protocol: TCP
       TargetGroupAttributes:
+        # The NLB does TLS passthrough, so the proxy never sees the client IP at the
+        # TCP layer. PROXY protocol v2 prepends the real client IP/port, which nginx
+        # (proxy_protocol) and Envoy (proxy_protocol listener filter) parse back out.
         - Key: proxy_protocol_v2.enabled
           Value: true
       TargetType: ip
@@ -387,6 +403,8 @@ Resources:
               awslogs-group: !Ref ProxyLogGroup
               awslogs-stream-prefix: lattice-externalconnectivity
           Ulimits:
+            # Raise the open-file-descriptor limit well above the default 1024 so the
+            # proxy can sustain a high number of concurrent connections.
             - HardLimit: 1048576
               Name: nofile
               SoftLimit: 1048576
@@ -394,6 +412,8 @@ Resources:
       Memory: 4096
       RequiresCompatibilities:
         - FARGATE
+      # ARM64 (Graviton) for better price/performance. The images are built ARM64 to
+      # match (CodeBuild ARM_CONTAINER), so this must stay aligned with the build.
       RuntimePlatform:
         CpuArchitecture: ARM64
         OperatingSystemFamily: LINUX
@@ -406,6 +426,8 @@ Resources:
       - ProxyNLBListenerHTTPS
     Properties:
       Cluster: !Ref ProxyCluster
+      # Enables ECS Exec (interactive shell into a task) for debugging; relies on the
+      # ssmmessages permissions granted to the task and task-execution roles below.
       EnableExecuteCommand: true
       LaunchType: FARGATE
       LoadBalancers:
@@ -441,14 +463,27 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
+              # ECR pull: image-layer actions scoped to this repo; only the auth
+              # token call requires "*" (it does not support resource scoping).
               - Effect: Allow
                 Action:
-                  - 'ecr:GetAuthorizationToken'
                   - 'ecr:BatchCheckLayerAvailability'
                   - 'ecr:GetDownloadUrlForLayer'
                   - 'ecr:BatchGetImage'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${LatticeExternalConnectivityECRRepo}'
+              - Effect: Allow
+                Action: 'ecr:GetAuthorizationToken'
+                Resource: '*'
+              # Container log delivery, scoped to the proxy log group.
+              - Effect: Allow
+                Action:
                   - 'logs:CreateLogStream'
                   - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${ProxyCluster}:*'
+              # ECS Exec (SSM messages) requires "*" - these actions do not support
+              # resource-level scoping.
+              - Effect: Allow
+                Action:
                   - 'ssmmessages:CreateControlChannel'
                   - 'ssmmessages:CreateDataChannel'
                   - 'ssmmessages:OpenControlChannel'
@@ -473,6 +508,8 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
+              # ECS Exec (SSM messages) requires "*" - these actions do not support
+              # resource-level scoping.
               - Effect: Allow
                 Action:
                   - 'ssmmessages:CreateControlChannel'
@@ -486,6 +523,7 @@ Resources:
     Type: 'AWS::Logs::LogGroup'
     Properties:
       LogGroupName: !Sub '/${ProxyCluster}'
+      RetentionInDays: 90
 
   # AutoScaling - Scalable Target
   ProxyScalableTarget:
@@ -494,7 +532,9 @@ Resources:
       MaxCapacity: 9
       MinCapacity: 3
       ResourceId: !Join ['',['service/',!Ref ProxyCluster,'/',!GetAtt ProxyService.Name]]
-      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      # RoleARN is intentionally omitted: Application Auto Scaling uses the
+      # AWSServiceRoleForApplicationAutoScaling_ECSService service-linked role
+      # automatically (created on first use).
       ScalableDimension: 'ecs:service:DesiredCount'
       ServiceNamespace: 'ecs'
       
@@ -515,10 +555,16 @@ Resources:
           PredefinedMetricType: ECSServiceAverageCPUUtilization
 
   # ========== CI/CD PIPELINE ==========
-  # Flow: edit CodeCommit -> CodePipeline (Source) -> Build (CodeBuild: build & push
-  # immutable commit-tagged image, emit imagedefinitions.json) -> Deploy (ECS rolling
-  # update). The bootstrap stage (custom resource) seeds CodeCommit from SourceRepoUrl
-  # and produces the initial ':bootstrap' image so the ECS service can start.
+  # Once running, you edit the proxy by committing to CodeCommit. Each commit flows
+  # through the pipeline:
+  #   1. Source  (CodePipeline) picks up the commit from CodeCommit.
+  #   2. Build   (CodeBuild) builds the image, tags it with the commit ID, pushes it
+  #              to ECR, and writes imagedefinitions.json for the deploy stage.
+  #   3. Deploy  (ECS) does a rolling update of the service to the new image.
+  #
+  # Before any of that can run, the bootstrap stage (a custom resource, further below)
+  # seeds CodeCommit from SourceRepoUrl and builds the initial ':bootstrap' image, so
+  # the ECS service has something to start from on first creation.
 
   # ---------- PIPELINE ARTIFACT BUCKET ----------
   PipelineArtifactBucket:
@@ -630,12 +676,18 @@ Resources:
                 - |
                   set -euo pipefail
                   if aws codecommit get-branch --repository-name "$CC_REPO_NAME" --branch-name "$CC_BRANCH" >/dev/null 2>&1; then
-                    echo "CodeCommit repo already seeded on branch $CC_BRANCH; skipping seed (preserving user edits)."
+                    echo "CodeCommit repo '$CC_REPO_NAME' already has branch '$CC_BRANCH'; skipping seed (preserving user edits)."
                   else
-                    echo "Seeding CodeCommit from $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH (engine: $PROXY_ENGINE)"
-                    git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" /tmp/src
+                    echo "Seeding CodeCommit repo '$CC_REPO_NAME' (branch '$CC_BRANCH') from $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH, engine '$PROXY_ENGINE'"
+                    if ! git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" /tmp/src; then
+                      echo "ERROR: failed to clone $SOURCE_REPO_URL (branch $SOURCE_REPO_BRANCH)."
+                      echo "       Check SourceRepoUrl/SourceRepoBranch are correct and the branch is publicly reachable."
+                      exit 1
+                    fi
                     if [ ! -d "/tmp/src/proxies/$PROXY_ENGINE" ]; then
-                      echo "ERROR: proxies/$PROXY_ENGINE not found in source repo"; exit 1
+                      echo "ERROR: directory 'proxies/$PROXY_ENGINE' not found in $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH."
+                      echo "       Ensure the proxy engine '$PROXY_ENGINE' exists at that path on that branch."
+                      exit 1
                     fi
                     mkdir -p /tmp/seed
                     cp -a "/tmp/src/proxies/$PROXY_ENGINE/." /tmp/seed/
@@ -647,17 +699,24 @@ Resources:
                     git add .
                     git commit -m "Initial seed: $PROXY_ENGINE proxy from $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH"
                     git push origin "$CC_BRANCH"
+                    echo "Seed complete: pushed proxies/$PROXY_ENGINE to '$CC_REPO_NAME' branch '$CC_BRANCH'."
                   fi
             post_build:
               commands:
                 - |
                   set -euo pipefail
+                  echo "Building initial ':bootstrap' image for engine '$PROXY_ENGINE'"
                   aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
                   rm -rf /tmp/cc
                   git clone --depth 1 "codecommit::$AWS_REGION://$CC_REPO_NAME" /tmp/cc
                   cd /tmp/cc
-                  docker build -t "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:bootstrap" .
+                  if ! docker build -t "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:bootstrap" .; then
+                    echo "ERROR: docker build failed. If this is the Envoy engine, a Docker Hub pull-rate"
+                    echo "       limit ('toomanyrequests') is a common cause - see proxies/envoy/."
+                    exit 1
+                  fi
                   docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:bootstrap"
+                  echo "Pushed ':bootstrap' image to $ECR_REPOSITORY."
       TimeoutInMinutes: 12
 
   # Lambda-backed custom resource: runs the bootstrap build on stack create and waits
@@ -897,6 +956,8 @@ Resources:
               Configuration:
                 RepositoryName: !GetAtt ProxySourceRepo.Name
                 BranchName: !Ref SourceRepoBranch
+                # Polling disabled on purpose: the PipelineTriggerRule (EventBridge)
+                # starts the pipeline on each commit, which is faster than polling.
                 PollForSourceChanges: 'false'
               OutputArtifacts:
                 - Name: SourceOutput
