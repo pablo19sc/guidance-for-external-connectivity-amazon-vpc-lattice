@@ -31,8 +31,8 @@ In this folder you have three files that provide the following examples:
 
 | Name | Description | Type | Required |
 |------|-------------|------|:--------:|
-| PrivateHostedZoneName | Private Hosted Zone Name (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneId | `String` | no |
-| PrivateHostedZoneId | Private Hosted Zone ID (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneName | `String` | no |
+| PrivateHostedZoneName | Private Hosted Zone Name (for External Connectivity VPC resolution); specify either this value or PrivateHostedZoneId | `String` | no |
+| PrivateHostedZoneId | Private Hosted Zone ID (for External Connectivity VPC resolution); specify either this value or PrivateHostedZoneName | `String` | no |
 | CustomDomainName | Custom Domain Name (VPC Lattice service) | `String` | yes |
 | VPCLatticeDomainName | VPC Lattice service generated Domain Name | `String` | yes |
 | VPCLatticeHostedZoneId | VPC Lattice service generated Hosted Zone ID | `String` | yes |

@@ -2,7 +2,7 @@
 
 > ⚠️ **Not recommended for external exposure.** This restores a plaintext HTTP proxy on
 > port `80`. Traffic between the external client and the proxy, and between the proxy and
-> the VPC Lattice service, travels **in cleartext across the internet** - the full
+> the VPC Lattice service, travels **in cleartext across the internet**: the full
 > request line, headers, and body are visible on the wire. Even if the VPC Lattice
 > service enforces SigV4 auth, the request is authenticated but **not encrypted**.
 >

@@ -42,21 +42,21 @@ A VPC Lattice service gets a globally resolvable DNS name, but outside its VPC t
 1. Each endpoint consumes multiple /28 IPv4 and /80 IPv6 ranges per Availability Zone (subnet).
 2. Several VPC Lattice services can share a single IP from those ranges.
 
-So you can't assume a service's IP is stable or unique. To handle this, each service associated to the network gets its own globally unique, externally resolvable domain name (resolving to a routable endpoint IP). **For hybrid and cross-Region access**, service network endpoints are the recommended approach — you only configure the matching DNS resolution (hybrid or in the consumer VPC) to target the endpoint.
+So you can't assume a service's IP is stable or unique. To handle this, each service associated to the network gets its own globally unique, externally resolvable domain name (resolving to a routable endpoint IP). **For hybrid and cross-Region access**, service network endpoints are the recommended approach: you only configure the matching DNS resolution (hybrid or in the consumer VPC) to target the endpoint.
 
 ![image](./img/vpc-lattice-diagram-crossRegion.png)
 
 ![image](./img/vpc-lattice-diagram-hybrid.png)
 
-**For clients outside AWS with no private connectivity**, the IPs used to reach services can change as services are added. This Guidance front-ends VPC Lattice with a proxy layer that resolves services dynamically on each request — so a changing backend IP never breaks your clients, and you avoid discovering endpoint IPs and updating static configuration yourself.
+**For clients outside AWS with no private connectivity**, the IPs used to reach services can change as services are added. This Guidance front-ends VPC Lattice with a proxy layer that resolves services dynamically on each request, so a changing backend IP never breaks your clients, and you avoid discovering endpoint IPs and updating static configuration yourself.
 
 ### Proxy engines
 
-The proxy runs as a fleet of containers on ECS/Fargate. You choose the engine at deploy time with the `ProxyEngine` parameter (default `nginx`); both perform the same TLS passthrough, so the surrounding infrastructure is identical — pick based on how much you expect to extend the proxy.
+The proxy runs as a fleet of containers on ECS/Fargate. You choose the engine at deploy time with the `ProxyEngine` parameter (default `nginx`); both perform the same TLS passthrough, so the surrounding infrastructure is identical. Pick based on how much you expect to extend the proxy.
 
 | Engine | `ProxyEngine` | Choose it when |
 |---|---|---|
-| **NGINX** | `nginx` *(default)* | You want the simplest, smallest TLS-passthrough proxy — just external reach to VPC Lattice. |
+| **NGINX** | `nginx` *(default)* | You want the simplest, smallest TLS-passthrough proxy, just external reach to VPC Lattice. |
 | **Envoy** | `envoy` | You expect to grow past plain passthrough (L7 routing, gRPC, richer observability, xDS) and want that data plane as your baseline. |
 
 For how each engine works, how it's built, and how to edit it after deployment, see [`proxies/`](/proxies/).
@@ -89,7 +89,7 @@ These instructions are optimized for Linux ARM64. Because the proxy runs on AWS 
 
 ### Supported AWS Regions
 
-Deploy this Guidance in any Region where **Amazon VPC Lattice** is available — it's the gating service. The other services have broader Region support.
+Deploy this Guidance in any Region where **Amazon VPC Lattice** is available (it's the gating service). The other services have broader Region support.
 
 | Service | Region availability |
 |---|---|
@@ -123,15 +123,15 @@ For both records, we recommend an [ALIAS record](https://docs.aws.amazon.com/Rou
 ## Deployment Steps
 
 1. Deploy the [stack template](/guidance-stack.yml). Key parameters:
-   * `AllowedIPv4Block` (required) and `AllowedIPv6Block` (optional) — CIDR blocks allowed to reach the public NLB.
-   * `VpcCidr` — VPC IPv4 CIDR, defaults to `192.168.1.0/16`.
-   * `ProxyEngine` — proxy engine to deploy: `nginx` (default) or `envoy` (see [Proxy engines](#proxy-engines)).
+   * `AllowedIPv4Block` (required) and `AllowedIPv6Block` (optional): CIDR blocks allowed to reach the public NLB.
+   * `VpcCidr`: VPC IPv4 CIDR, defaults to `192.168.1.0/16`.
+   * `ProxyEngine`: proxy engine to deploy, `nginx` (default) or `envoy` (see [Proxy engines](#proxy-engines)).
 
 ```
 aws cloudformation deploy --template-file ./guidance-stack.yml --stack-name guidance-vpclattice-external --parameter-overrides AllowedIPv4Block={YOUR_IPV4_BLOCK} AllowedIPv6Block={YOUR_IPV6_BLOCK} ProxyEngine=nginx --capabilities CAPABILITY_IAM
 ```
 
-The stack deploys three layers — the network path, the proxy that serves traffic, and a CI/CD pipeline to iterate on the proxy. The **Lifecycle** column shows what runs continuously, what only runs on demand, and what is kept when the stack is deleted:
+The stack deploys three layers: the network path, the proxy that serves traffic, and a CI/CD pipeline to iterate on the proxy. The **Lifecycle** column shows what runs continuously, what only runs on demand, and what is kept when the stack is deleted:
 
 | Layer | Resources | Lifecycle |
 |---|---|---|
@@ -173,7 +173,7 @@ You can test this with the [setcredentials.sh](./scripts/setcredentials.sh) and 
 
 ## Cleanup
 
-1. **Delete the stack** — removes everything except the three retained resources below.
+1. **Delete the stack**. This removes everything except the three retained resources below.
 
 ```
 aws cloudformation delete-stack --stack-name guidance-vpclattice-external --region {YOUR_REGION}
@@ -199,9 +199,9 @@ Because this is **external** connectivity over the public internet, the Guidance
 
 ### Scaling
 
-The ECS service autoscales on average CPU — under load testing the proxy was CPU-bound at the chosen task sizes (see these [independent measurements](https://www.stormforge.io/blog/aws-fargate-network-performance/)). Adjust the metric to fit your workload by editing [guidance-stack.yml](/guidance-stack.yml).
+The ECS service autoscales on average CPU. Under load testing the proxy was CPU-bound at the chosen task sizes (see these [independent measurements](https://www.stormforge.io/blog/aws-fargate-network-performance/)). Adjust the metric to fit your workload by editing [guidance-stack.yml](/guidance-stack.yml).
 
-This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/services-that-can-integrate-ecs.html) target tracking with the `ECSServiceAverageCPUUtilization` predefined metric. You can swap in your own metric via a [`CustomizedMetricSpecification`](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration.html#cfn-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration-customizedmetricspecification). The default target is **70%** CPU — adjust in the template:
+This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/services-that-can-integrate-ecs.html) target tracking with the `ECSServiceAverageCPUUtilization` predefined metric. You can swap in your own metric via a [`CustomizedMetricSpecification`](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration.html#cfn-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration-customizedmetricspecification). The default target is **70%** CPU; adjust it in the template:
 
 ```
   NginxScalableTarget:
@@ -262,7 +262,7 @@ The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solu
 
 ### Considerations
 
-The proxy deliberately handles only **layer 4 connectivity and layer 3 security**, leaving all layer 7 concerns — including authentication and authorization — to VPC Lattice, so you should keep your service network and service authN/Z policies in place. It runs as a fleet of lightweight open-source proxy tasks (NGINX or Envoy — see [Proxy engines](#proxy-engines)) on ECS behind an external NLB, TCP-proxying TLS connections by passthrough and using the SNI for dynamic endpoint lookup, which means no certificates are managed between the provider and the proxy. HTTP proxying is available only as an opt-in [customization](/customizations/) and is not recommended for external exposure. VPC Lattice services commonly use custom domains, which lets you use separate Route 53 hosted zones for different consumers (external users vs. the proxy).
+The proxy deliberately handles only **layer 4 connectivity and layer 3 security**, leaving all layer 7 concerns (including authentication and authorization) to VPC Lattice, so you should keep your service network and service authN/Z policies in place. It runs as a fleet of lightweight open-source proxy tasks (NGINX or Envoy; see [Proxy engines](#proxy-engines)) on ECS behind an external NLB, TCP-proxying TLS connections by passthrough and using the SNI for dynamic endpoint lookup, which means no certificates are managed between the provider and the proxy. HTTP proxying is available only as an opt-in [customization](/customizations/) and is not recommended for external exposure. VPC Lattice services commonly use custom domains, which lets you use separate Route 53 hosted zones for different consumers (external users vs. the proxy).
 
 ## License
 

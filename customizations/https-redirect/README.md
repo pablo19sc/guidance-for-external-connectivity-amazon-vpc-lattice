@@ -7,7 +7,7 @@
 > first hop (the body usually isn't sent until the client follows to HTTPS).
 >
 > A redirect only helps clients that start in cleartext **and** automatically follow
-> redirects (browsers, `curl -L`). It does **not** help SigV4-signed / API clients - a
+> redirects (browsers, `curl -L`). It does **not** help SigV4-signed / API clients, since a
 > signed request bounced to a new scheme generally won't be re-signed and replayed, so
 > you'll see a confusing failure rather than a smooth upgrade. For the API-centric
 > consumer profile this Guidance targets, prefer the default (no port `80` at all).
@@ -67,7 +67,7 @@ redirect:
 
 ## 2. CloudFormation delta (`guidance-stack.yml`)
 
-This is the **same delta** as [`http-passthrough/`](../http-passthrough/) - you still
+This is the **same delta** as [`http-passthrough/`](../http-passthrough/); you still
 need the port-`80` NLB listener, target group, security-group rule, and container port
 mapping. The only difference is the proxy config above (redirect instead of proxy).
 
@@ -76,6 +76,6 @@ Apply steps **a** through **e** from
 
 ## 3. VPC Lattice service
 
-No HTTP listener is required on the VPC Lattice service - this snippet only bounces
+No HTTP listener is required on the VPC Lattice service; this snippet only bounces
 clients to HTTPS, and the actual request is served over the default TLS-passthrough path
 on `443`. Keep the Lattice service **HTTPS-only**.

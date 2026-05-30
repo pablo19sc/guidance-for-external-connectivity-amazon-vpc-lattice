@@ -23,7 +23,7 @@ For the engine comparison and how to choose, see the repository
 
 The selected engine's directory is seeded into the CodeCommit repository at stack
 creation (clone URL is in the `ProxySourceRepoCloneUrlHttp` stack output). **To change
-the proxy, commit to the CodeCommit repository** — a commit automatically triggers the
+the proxy, commit to the CodeCommit repository.** A commit automatically triggers the
 pipeline to build a new immutable image and roll it out to ECS. You can also point the
 `SourceRepoUrl` stack parameter at your own fork to bootstrap from custom code.
 
@@ -31,7 +31,7 @@ pipeline to build a new immutable image and roll it out to ECS. You can also poi
 
 Both perform the same TLS passthrough: read the SNI (or `Host`) to learn the
 destination, resolve the VPC Lattice domain dynamically via the VPC resolver
-(`169.254.169.253`), and forward the still-encrypted bytes — no TLS is terminated, so no
+(`169.254.169.253`), and forward the still-encrypted bytes. No TLS is terminated, so no
 certificates are managed on the proxy. The NLB sends a **PROXY protocol v2** header (on
 data and health-check connections), which the proxy consumes to recover the real client
 IP. Each engine listens on **443 only** (TLS-only by default) and writes logs to the
@@ -62,8 +62,8 @@ noise out of the access log.
 
 Based on the official `envoyproxy/envoy` image, pinned via the `ENVOY_VERSION` build arg
 in the [Dockerfile](./envoy/Dockerfile). The [`envoy.yaml`](./envoy/envoy.yaml) listener
-chains two listener filters — `proxy_protocol` (consume the PROXY v2 header) then
-`tls_inspector` (read SNI without decrypting) — and forwards with the **SNI dynamic
+chains two listener filters (`proxy_protocol` to consume the PROXY v2 header, then
+`tls_inspector` to read SNI without decrypting) and forwards with the **SNI dynamic
 forward proxy** network filter into a dynamic forward proxy cluster:
 
 ```yaml
