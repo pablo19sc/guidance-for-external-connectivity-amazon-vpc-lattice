@@ -22,7 +22,7 @@ Parameters:
     Description: Certificate ARN (for HTTPS connection)
   
 Resources:
-  # ---------- SERVICE NETWORK ----------
+  # ---------- SERVICE NETWORK ----------
   VPCLatticeServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
     Properties:
@@ -71,11 +71,6 @@ Resources:
           FromPort: 443
           ToPort: 443
           Description: Ingress rule for HTTPS
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: 'tcp'
-          FromPort: 80
-          ToPort: 80
-          Description: Ingress rule for HTTP
       SecurityGroupEgress:
         - CidrIp: 0.0.0.0/0
           IpProtocol: '-1'
@@ -88,7 +83,7 @@ Resources:
             - - !Sub sn-endpoint-sg
               - !Ref AWS::StackName
   
-  # ---------- SERVICE ----------
+  # ---------- SERVICE ----------
   VPCLatticeService:
     Type: AWS::VpcLattice::Service
     Properties:
@@ -114,7 +109,7 @@ Resources:
       ServiceIdentifier: !Ref VPCLatticeService
       ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
 
-  # ---------- TARGET GROUP ----------
+  # ---------- TARGET GROUP ----------
   VPCLatticeLambdaTarget:
     Type: AWS::VpcLattice::TargetGroup
     Properties:
@@ -123,26 +118,13 @@ Resources:
       Targets:
         - Id: !GetAtt LambdaFunction.Arn
 
-  # ---------- LISTENERS ----------
-  # HTTP
-  VPCLatticeServiceListenerHTTP:
-    Type: AWS::VpcLattice::Listener
-    Properties:
-      DefaultAction: 
-        Forward:
-          TargetGroups:
-            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
-              Weight: 1
-      Name: http-80
-      Port: 80
-      Protocol: HTTP
-      ServiceIdentifier: !Ref VPCLatticeService
-
-  # HTTPS
+  # ---------- LISTENERS ----------
+  # HTTPS only (TLS-only best practice). To add an HTTP listener for testing, see
+  # the snippets under the repo's customizations/ folder.
   VPCLatticeServiceListenerHTTPS:
     Type: AWS::VpcLattice::Listener
     Properties:
-      DefaultAction: 
+      DefaultAction:
         Forward:
           TargetGroups:
             - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
@@ -152,7 +134,7 @@ Resources:
       Protocol: HTTPS
       ServiceIdentifier: !Ref VPCLatticeService
   
-  # ---------- LAMBDA FUNCTION ----------
+  # ---------- LAMBDA FUNCTION ----------
   LambdaFunctionRole:
     Type: AWS::IAM::Role
     Properties:

@@ -13,7 +13,7 @@ Parameters:
     Description: Certificate ARN (for HTTPS connection)
   
 Resources:
-  # ---------- SERVICE NETWORK ----------
+  # ---------- SERVICE NETWORK ----------
   VPCLatticeServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
     Properties:
@@ -37,7 +37,7 @@ Resources:
       ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
       VpcIdentifier: !Ref VpcId
 
-  # ---------- SERVICE ----------
+  # ---------- SERVICE ----------
   VPCLatticeService:
     Type: AWS::VpcLattice::Service
     Properties:
@@ -63,7 +63,7 @@ Resources:
       ServiceIdentifier: !Ref VPCLatticeService
       ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
 
-  # ---------- TARGET GROUP ----------
+  # ---------- TARGET GROUP ----------
   VPCLatticeLambdaTarget:
     Type: AWS::VpcLattice::TargetGroup
     Properties:
@@ -72,26 +72,13 @@ Resources:
       Targets:
         - Id: !GetAtt LambdaFunction.Arn
 
-  # ---------- LISTENERS ----------
-  # HTTP
-  VPCLatticeServiceListenerHTTP:
-    Type: AWS::VpcLattice::Listener
-    Properties:
-      DefaultAction: 
-        Forward:
-          TargetGroups:
-            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
-              Weight: 1
-      Name: http-80
-      Port: 80
-      Protocol: HTTP
-      ServiceIdentifier: !Ref VPCLatticeService
-
-  # HTTPS
+  # ---------- LISTENERS ----------
+  # HTTPS only (TLS-only best practice). To add an HTTP listener for testing, see
+  # the snippets under the repo's customizations/ folder.
   VPCLatticeServiceListenerHTTPS:
     Type: AWS::VpcLattice::Listener
     Properties:
-      DefaultAction: 
+      DefaultAction:
         Forward:
           TargetGroups:
             - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
@@ -101,7 +88,7 @@ Resources:
       Protocol: HTTPS
       ServiceIdentifier: !Ref VPCLatticeService
   
-  # ---------- LAMBDA FUNCTION ----------
+  # ---------- LAMBDA FUNCTION ----------
   LambdaFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -175,4 +162,3 @@ Outputs:
   VPCLatticeServiceHostedZoneId:
     Description: VPC Lattice service hosted zone ID
     Value: !GetAtt VPCLatticeService.DnsEntry.HostedZoneId
-  
