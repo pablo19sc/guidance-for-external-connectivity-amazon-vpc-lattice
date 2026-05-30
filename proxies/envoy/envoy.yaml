@@ -1,8 +1,8 @@
-# Envoy proxy config — TLS passthrough to VPC Lattice via SNI dynamic forward proxy.
+# Envoy proxy config - TLS passthrough to VPC Lattice via SNI dynamic forward proxy.
 #
-# This mirrors the NGINX stream/443 behavior: read the SNI without decrypting,
-# dynamically resolve that hostname, and TCP-proxy the (still-encrypted) bytes to
-# the VPC Lattice service. TLS terminates at Lattice, not here.
+# The envoy proxy reads the SNI without decrypting, dynamically resolve that hostname, 
+# and TCP-proxy the (still-encrypted) bytes to the VPC Lattice service. 
+# TLS terminates at Lattice, not here.
 #
 # Listener filter order matters:
 #   1. proxy_protocol  - consume the PROXY v2 header the NLB prepends (also on
@@ -42,8 +42,8 @@ static_resources:
           port_value: 443
           dns_cache_config:
             name: dynamic_forward_proxy_cache_config
-            # IPv4 only, matching the NGINX resolver (ipv6=off). Resolution uses the
-            # task's system resolver, which on Fargate points to the VPC resolver.
+            # IPv4 only. Resolution uses the task's system resolver, 
+            # which on Fargate points to the VPC resolver.
             dns_lookup_family: V4_ONLY
       - name: envoy.tcp_proxy
         typed_config:
