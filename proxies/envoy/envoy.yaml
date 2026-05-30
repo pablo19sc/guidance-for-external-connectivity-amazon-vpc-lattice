@@ -1,0 +1,67 @@
+# Envoy proxy config — TLS passthrough to VPC Lattice via SNI dynamic forward proxy.
+#
+# This mirrors the NGINX stream/443 behavior: read the SNI without decrypting,
+# dynamically resolve that hostname, and TCP-proxy the (still-encrypted) bytes to
+# the VPC Lattice service. TLS terminates at Lattice, not here.
+#
+# Listener filter order matters:
+#   1. proxy_protocol  - consume the PROXY v2 header the NLB prepends (also on
+#      health-check connections), recovering the real client IP.
+#   2. tls_inspector   - peek at the TLS ClientHello to extract the SNI.
+# Then the sni_dynamic_forward_proxy network filter uses that SNI as the upstream
+# host and tcp_proxy forwards to the dynamic_forward_proxy_cluster.
+
+admin:
+  # Bound to localhost only; reachable via ECS Exec for debugging.
+  address:
+    socket_address:
+      protocol: TCP
+      address: 127.0.0.1
+      port_value: 9901
+
+static_resources:
+  listeners:
+  - name: lattice_passthrough
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 443
+    listener_filters:
+    - name: envoy.filters.listener.proxy_protocol
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+    - name: envoy.filters.listener.tls_inspector
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.sni_dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.sni_dynamic_forward_proxy.v3.FilterConfig
+          port_value: 443
+          dns_cache_config:
+            name: dynamic_forward_proxy_cache_config
+            # IPv4 only, matching the NGINX resolver (ipv6=off). Resolution uses the
+            # task's system resolver, which on Fargate points to the VPC resolver.
+            dns_lookup_family: V4_ONLY
+      - name: envoy.tcp_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+          stat_prefix: lattice_tcp
+          cluster: dynamic_forward_proxy_cluster
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+  clusters:
+  - name: dynamic_forward_proxy_cluster
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config:
+          name: dynamic_forward_proxy_cache_config
+          dns_lookup_family: V4_ONLY

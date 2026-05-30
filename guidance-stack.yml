@@ -21,15 +21,17 @@ Parameters:
     Default: nginx
     AllowedValues:
       - nginx
+      - envoy
     Description: >-
       Proxy engine to deploy. The matching proxies/<engine>/ directory is seeded
-      into the CodeCommit repository at stack creation.
+      into the CodeCommit repository at stack creation. NGINX is the simplest
+      TLS-passthrough option; Envoy provides the same passthrough behavior on a
+      more extensible data plane.
   SourceRepoUrl:
     Type: String
     Default: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice.git
     Description: >-
-      Git URL used ONCE at stack creation to seed the CodeCommit repository with the
-      selected proxy source. Point this at your own fork to bootstrap from custom code.
+      Git URL used ONCE at stack creation to seed the CodeCommit repository with the selected proxy source. Point this at your own fork to bootstrap from custom code.
   SourceRepoBranch:
     Type: String
     Default: main
@@ -198,54 +200,54 @@ Resources:
 
   # ---------- SECURITY GROUPS ----------
   # Network Load Balancer
-  NginxNLBSG:
+  ProxyNLBSG:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: NGINX NLB Security Group
+      GroupDescription: Proxy NLB Security Group
       Tags:
         - Key: Name
           Value: !Join
             - '-'
-            - - !Sub nlb-sg
+            - - !Sub '${ProxyEngine}-nlb-sg'
               - !Ref AWS::StackName
 
   # IPv4 Ingress rule (NLB) & Egress rule (TLS-only: port 443)
-  NginxNLBSGIPv4IngressHTTPS:
+  ProxyNLBSGIPv4IngressHTTPS:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref NginxNLBSG
+      GroupId: !Ref ProxyNLBSG
       CidrIp: !Ref AllowedIPv4Block
       IpProtocol: 'tcp'
       FromPort: 443
       ToPort: 443
 
-  NginxNLBSGEgressHTTPS:
+  ProxyNLBSGEgressHTTPS:
     Type: AWS::EC2::SecurityGroupEgress
     Properties:
-      GroupId: !Ref NginxNLBSG
-      DestinationSecurityGroupId: !Ref NginxECSSG
+      GroupId: !Ref ProxyNLBSG
+      DestinationSecurityGroupId: !Ref ProxyECSSG
       IpProtocol: 'tcp'
       FromPort: 443
       ToPort: 443
 
   # IPv6 Ingress rule (NLB) - if provided
-  NginxNLBSGIPv6IngressHTTPS:
+  ProxyNLBSGIPv6IngressHTTPS:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: Ipv6Provided
     Properties:
-      GroupId: !Ref NginxNLBSG
+      GroupId: !Ref ProxyNLBSG
       CidrIpv6: !Ref AllowedIPv6Block
       IpProtocol: 'tcp'
       FromPort: 443
       ToPort: 443
 
   # ECS Cluster
-  NginxECSSG:
+  ProxyECSSG:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: NGINX (ECS) Security group
+      GroupDescription: Proxy (ECS) Security group
       SecurityGroupEgress:
         - CidrIp: 0.0.0.0/0
           IpProtocol: '-1'
@@ -253,15 +255,15 @@ Resources:
         - Key: Name
           Value: !Join
             - '-'
-            - - !Sub nginx-sg
+            - - !Sub '${ProxyEngine}-ecs-sg'
               - !Ref AWS::StackName
   
   # ECS ingress rule from the NLB (TLS-only: port 443)
-  NginxECSSGIngressHTTPS:
+  ProxyECSSGIngressHTTPS:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref NginxECSSG
-      SourceSecurityGroupId: !Ref NginxNLBSG
+      GroupId: !Ref ProxyECSSG
+      SourceSecurityGroupId: !Ref ProxyNLBSG
       IpProtocol: 'tcp'
       FromPort: 443
       ToPort: 443
@@ -289,21 +291,21 @@ Resources:
               - !Ref AWS::StackName
 
   # ---------- NETWORK LOAD BALANCER ----------
-  NginxNLB:
+  ProxyNLB:
     Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
     Properties:
       IpAddressType: dualstack
       Scheme: internet-facing
       Type: network
       SecurityGroups: 
-        - !Ref NginxNLBSG
+        - !Ref ProxyNLBSG
       Subnets:
         - !Ref PublicSubneta
         - !Ref PublicSubnetb
         - !Ref PublicSubnetc
 
   # Target Group: 443
-  NginxNLBTGroupHTTPS:
+  ProxyNLBTGroupHTTPS:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
       HealthCheckIntervalSeconds: 5
@@ -320,13 +322,13 @@ Resources:
       VpcId: !Ref VPC
 
   # Listener: 443
-  NginxNLBListenerHTTPS:
+  ProxyNLBListenerHTTPS:
     Type: 'AWS::ElasticLoadBalancingV2::Listener'
     Properties:
       DefaultActions:
-        - TargetGroupArn: !Ref NginxNLBTGroupHTTPS
+        - TargetGroupArn: !Ref ProxyNLBTGroupHTTPS
           Type: forward
-      LoadBalancerArn: !Ref NginxNLB
+      LoadBalancerArn: !Ref ProxyNLB
       Port: 443
       Protocol: TCP
 
@@ -342,14 +344,17 @@ Resources:
   # ---------- CODECOMMIT (proxy source of truth) ----------
   # Seeded once at stack creation from SourceRepoUrl with the selected proxy engine.
   # After deployment this is the user-editable source: a commit triggers the pipeline.
+  # Retained on stack deletion so proxy customizations committed here are not lost.
   ProxySourceRepo:
     Type: AWS::CodeCommit::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      RepositoryName: !Sub '${AWS::StackName}-proxy-source'
+      RepositoryName: !Sub '${AWS::StackName}-${ProxyEngine}-source'
       RepositoryDescription: !Sub 'Editable proxy source for ${AWS::StackName}. Commits trigger build and deploy.'
 
   # ---------- ECS CLUSTER ----------
-  NginxCluster:
+  ProxyCluster:
     Type: 'AWS::ECS::Cluster'
     Properties:
       CapacityProviders:
@@ -362,16 +367,16 @@ Resources:
   # Initial task definition references the image built by the bootstrap stage
   # (tag: bootstrap). Subsequent deploys are driven by CodePipeline's ECS deploy
   # action, which registers new task-def revisions with immutable commit-based tags.
-  NginxTask:
+  ProxyTask:
     DependsOn:
       - ProxyBootstrapCustomResource
     Type: 'AWS::ECS::TaskDefinition'
     Properties:
-      ExecutionRoleArn: !Ref NginxTaskExecRole
+      ExecutionRoleArn: !Ref ProxyTaskExecRole
       NetworkMode: awsvpc
       ContainerDefinitions:
         - Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LatticeExternalConnectivityECRRepo}:bootstrap"
-          Name: Nginx
+          Name: Proxy
           PortMappings:
             - ContainerPort: 443
               Protocol: tcp
@@ -379,7 +384,7 @@ Resources:
             LogDriver: awslogs
             Options:
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-group: !Ref NginxLogGroup
+              awslogs-group: !Ref ProxyLogGroup
               awslogs-stream-prefix: lattice-externalconnectivity
           Ulimits:
             - HardLimit: 1048576
@@ -392,34 +397,34 @@ Resources:
       RuntimePlatform:
         CpuArchitecture: ARM64
         OperatingSystemFamily: LINUX
-      TaskRoleArn: !Ref NginxTaskRole
+      TaskRoleArn: !Ref ProxyTaskRole
 
   # ECS Service
-  NginxService:
+  ProxyService:
     Type: 'AWS::ECS::Service'
     DependsOn:
-      - NginxNLBListenerHTTPS
+      - ProxyNLBListenerHTTPS
     Properties:
-      Cluster: !Ref NginxCluster
+      Cluster: !Ref ProxyCluster
       EnableExecuteCommand: true
       LaunchType: FARGATE
       LoadBalancers:
-        - ContainerName: Nginx
+        - ContainerName: Proxy
           ContainerPort: 443
-          TargetGroupArn: !Ref NginxNLBTGroupHTTPS
+          TargetGroupArn: !Ref ProxyNLBTGroupHTTPS
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
-            - !Ref NginxECSSG
+            - !Ref ProxyECSSG
           Subnets:
             - !Ref PrivateSubneta
             - !Ref PrivateSubnetb
             - !Ref PrivateSubnetc
       SchedulingStrategy: REPLICA
-      TaskDefinition: !Ref NginxTask
+      TaskDefinition: !Ref ProxyTask
 
   # ECS Task Execution Role
-  NginxTaskExecRole:
+  ProxyTaskExecRole:
     Type: 'AWS::IAM::Role'
     Properties:
       AssumeRolePolicyDocument:
@@ -451,7 +456,7 @@ Resources:
                 Resource: '*'
 
   # ECS Task Role
-  NginxTaskRole:
+  ProxyTaskRole:
     Type: 'AWS::IAM::Role'
     Properties:
       AssumeRolePolicyDocument:
@@ -477,31 +482,31 @@ Resources:
                 Resource: '*'
 
   # CloudWatch Log Group
-  NginxLogGroup:
+  ProxyLogGroup:
     Type: 'AWS::Logs::LogGroup'
     Properties:
-      LogGroupName: !Sub '/${NginxCluster}'
+      LogGroupName: !Sub '/${ProxyCluster}'
 
   # AutoScaling - Scalable Target
-  NginxScalableTarget:
+  ProxyScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties: 
       MaxCapacity: 9
       MinCapacity: 3
-      ResourceId: !Join ['',['service/',!Ref NginxCluster,'/',!GetAtt NginxService.Name]]
+      ResourceId: !Join ['',['service/',!Ref ProxyCluster,'/',!GetAtt ProxyService.Name]]
       RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
       ScalableDimension: 'ecs:service:DesiredCount'
       ServiceNamespace: 'ecs'
       
   # AutoScaling Policy
-  NginxScalingPolicy:
+  ProxyScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties: 
-      PolicyName: !Join ['',['scaling-policy-',!GetAtt NginxService.Name]]
+      PolicyName: !Join ['',['scaling-policy-',!GetAtt ProxyService.Name]]
       PolicyType: 'TargetTrackingScaling'
-      ResourceId: !Join ['',['service/',!Ref NginxCluster,'/',!GetAtt NginxService.Name]]
+      ResourceId: !Join ['',['service/',!Ref ProxyCluster,'/',!GetAtt ProxyService.Name]]
       ScalableDimension: 'ecs:service:DesiredCount'
-      ScalingTargetId: !Ref NginxScalableTarget
+      ScalingTargetId: !Ref ProxyScalableTarget
       TargetTrackingScalingPolicyConfiguration:
         TargetValue: 70.0
         ScaleInCooldown: 60
@@ -555,8 +560,8 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-proxy-bootstrap'
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-proxy-bootstrap:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-bootstrap'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-bootstrap:*'
         - PolicyName: CodeCommitSeed
           PolicyDocument:
             Version: '2012-10-17'
@@ -587,7 +592,7 @@ Resources:
   BootstrapProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${AWS::StackName}-proxy-bootstrap'
+      Name: !Sub '${AWS::StackName}-${ProxyEngine}-bootstrap'
       Description: 'Seed CodeCommit from SourceRepoUrl and build the initial proxy image'
       ServiceRole: !GetAtt BootstrapProjectRole.Arn
       Artifacts:
@@ -763,8 +768,8 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-proxy-image-build'
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-proxy-image-build:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-image-build'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-image-build:*'
         - PolicyName: ECRPush
           PolicyDocument:
             Version: '2012-10-17'
@@ -794,7 +799,7 @@ Resources:
   ImageBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${AWS::StackName}-proxy-image-build'
+      Name: !Sub '${AWS::StackName}-${ProxyEngine}-image-build'
       Description: 'Build and push the proxy image from CodeCommit source (pipeline build stage)'
       ServiceRole: !GetAtt ImageBuildProjectRole.Arn
       Artifacts:
@@ -810,7 +815,7 @@ Resources:
           - Name: AWS_ACCOUNT_ID
             Value: !Ref 'AWS::AccountId'
           - Name: CONTAINER_NAME
-            Value: Nginx
+            Value: Proxy
       Source:
         Type: CODEPIPELINE
         # buildspec.yml is provided by the CodeCommit source (proxies/<engine>/buildspec.yml)
@@ -867,8 +872,8 @@ Resources:
               - Effect: Allow
                 Action: iam:PassRole
                 Resource:
-                  - !GetAtt NginxTaskExecRole.Arn
-                  - !GetAtt NginxTaskRole.Arn
+                  - !GetAtt ProxyTaskExecRole.Arn
+                  - !GetAtt ProxyTaskRole.Arn
                 Condition:
                   StringEqualsIfExists:
                     iam:PassedToService: ecs-tasks.amazonaws.com
@@ -918,8 +923,8 @@ Resources:
                 Provider: ECS
                 Version: '1'
               Configuration:
-                ClusterName: !Ref NginxCluster
-                ServiceName: !GetAtt NginxService.Name
+                ClusterName: !Ref ProxyCluster
+                ServiceName: !GetAtt ProxyService.Name
                 FileName: imagedefinitions.json
               InputArtifacts:
                 - Name: BuildOutput
@@ -974,10 +979,10 @@ Outputs:
     Value: !Ref VPC
   NLBDomainName:
     Description: NLB Domain Name
-    Value: !GetAtt NginxNLB.DNSName
+    Value: !GetAtt ProxyNLB.DNSName
   NLBHostedZoneId:
     Description: NLB Hosted Zone ID
-    Value: !GetAtt NginxNLB.CanonicalHostedZoneID
+    Value: !GetAtt ProxyNLB.CanonicalHostedZoneID
   ProxySourceRepoCloneUrlHttp:
     Description: HTTPS clone URL for the editable proxy source (CodeCommit). Commits trigger the pipeline.
     Value: !GetAtt ProxySourceRepo.CloneUrlHttp

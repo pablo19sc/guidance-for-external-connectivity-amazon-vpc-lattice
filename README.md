@@ -9,6 +9,7 @@ This Guidance builds a [serverless](https://aws.amazon.com/serverless/) proxy th
 - [Guidance for External Connectivity to Amazon VPC Lattice](#guidance-for-external-connectivity-to-amazon-vpc-lattice)
   - [Table of Content](#table-of-content)
   - [Overview](#overview)
+    - [Proxy engines](#proxy-engines)
     - [Cost](#cost)
   - [Prerequisites](#prerequisites)
     - [Operating System](#operating-system)
@@ -18,13 +19,12 @@ This Guidance builds a [serverless](https://aws.amazon.com/serverless/) proxy th
   - [Deployment Steps](#deployment-steps)
   - [Deployment Validation](#deployment-validation)
   - [Running the Guidance](#running-the-guidance)
+  - [Cleanup](#cleanup)
   - [Next Steps](#next-steps)
     - [Security](#security)
-    - [Proxy Configuration](#proxy-configuration)
     - [Scaling](#scaling)
     - [Logging](#logging)
     - [Performance](#performance)
-  - [Cleanup](#cleanup)
   - [FAQ, known issues, additional considerations, and limitations](#faq-known-issues-additional-considerations-and-limitations)
     - [Considerations](#considerations)
   - [License](#license)
@@ -49,6 +49,17 @@ So you can't assume a service's IP is stable or unique. To handle this, each ser
 ![image](./img/vpc-lattice-diagram-hybrid.png)
 
 **For clients outside AWS with no private connectivity**, the IPs used to reach services can change as services are added. This Guidance front-ends VPC Lattice with a proxy layer that resolves services dynamically on each request — so a changing backend IP never breaks your clients, and you avoid discovering endpoint IPs and updating static configuration yourself.
+
+### Proxy engines
+
+The proxy runs as a fleet of containers on ECS/Fargate. You choose the engine at deploy time with the `ProxyEngine` parameter (default `nginx`); both perform the same TLS passthrough, so the surrounding infrastructure is identical — pick based on how much you expect to extend the proxy.
+
+| Engine | `ProxyEngine` | Choose it when |
+|---|---|---|
+| **NGINX** | `nginx` *(default)* | You want the simplest, smallest TLS-passthrough proxy — just external reach to VPC Lattice. |
+| **Envoy** | `envoy` | You expect to grow past plain passthrough (L7 routing, gRPC, richer observability, xDS) and want that data plane as your baseline. |
+
+For how each engine works, how it's built, and how to edit it after deployment, see [`proxies/`](/proxies/).
 
 ### Cost
 
@@ -114,26 +125,22 @@ For both records, we recommend an [ALIAS record](https://docs.aws.amazon.com/Rou
 1. Deploy the [stack template](/guidance-stack.yml). Key parameters:
    * `AllowedIPv4Block` (required) and `AllowedIPv6Block` (optional) — CIDR blocks allowed to reach the public NLB.
    * `VpcCidr` — VPC IPv4 CIDR, defaults to `192.168.1.0/16`.
-   * `ProxyEngine` — proxy engine to deploy (`nginx`).
+   * `ProxyEngine` — proxy engine to deploy: `nginx` (default) or `envoy` (see [Proxy engines](#proxy-engines)).
 
 ```
 aws cloudformation deploy --template-file ./guidance-stack.yml --stack-name guidance-vpclattice-external --parameter-overrides AllowedIPv4Block={YOUR_IPV4_BLOCK} AllowedIPv6Block={YOUR_IPV6_BLOCK} ProxyEngine=nginx --capabilities CAPABILITY_IAM
 ```
 
-The stack deploys:
+The stack deploys three layers — the network path, the proxy that serves traffic, and a CI/CD pipeline to iterate on the proxy. The **Lifecycle** column shows what runs continuously, what only runs on demand, and what is kept when the stack is deleted:
 
-**Networking**
-* An [Amazon VPC](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html) across three [Availability Zones](https://aws.amazon.com/about-aws/global-infrastructure/regions_az/) with public, private, and endpoint subnets, plus [route tables](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html) and an [Internet Gateway](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html).
-* [PrivateLink VPC endpoints](https://docs.aws.amazon.com/whitepapers/latest/aws-privatelink/what-are-vpc-endpoints.html) (interface and gateway) so Fargate reaches AWS services privately — no NAT gateways needed.
-
-**Ingress**
-* An internet-facing, dualstack [Network Load Balancer](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) and a [target group](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html) bound to a single TCP listener on **port 443**. The Guidance is **TLS-only by default** — port 80 is not exposed. To add an HTTP listener (cleartext passthrough or HTTP→HTTPS redirect), see [customizations/](/customizations/).
-* An [ECS](https://aws.amazon.com/ecs/) cluster, [task definition](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definitions.html), and [service](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_services.html) on [AWS Fargate](https://aws.amazon.com/fargate/) running the proxy, with autoscaling.
-
-**CI/CD** (so you can iterate on the proxy from within your account)
-* An [Amazon ECR](https://aws.amazon.com/ecr/) repository (scan-on-push) for container images.
-* An [AWS CodeCommit](https://docs.aws.amazon.com/codecommit/latest/userguide/welcome.html) repository holding the proxy source (`Dockerfile`, proxy config, `buildspec.yml`), **seeded once at stack creation** from `SourceRepoUrl` with the engine chosen in `ProxyEngine`.
-* An [AWS CodePipeline](https://aws.amazon.com/codepipeline/) pipeline (Source → Build → Deploy) using [AWS CodeBuild](https://aws.amazon.com/codebuild/). A commit to the CodeCommit repository automatically builds a new image and deploys it.
+| Layer | Resources | Lifecycle |
+|---|---|---|
+| **Networking** | [VPC](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html) across 3 AZs (public/private/endpoint subnets, [route tables](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html), [Internet Gateway](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html)) and [PrivateLink endpoints](https://docs.aws.amazon.com/whitepapers/latest/aws-privatelink/what-are-vpc-endpoints.html) (so Fargate needs no NAT) | 🟢 Always on · deleted with stack |
+| **Ingress** | Internet-facing dualstack [NLB](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) + target group on a single **port-443** TCP listener (TLS-only; add HTTP via [customizations/](/customizations/)) | 🟢 Always on · deleted with stack |
+| **Ingress** | [ECS](https://aws.amazon.com/ecs/) [service](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_services.html) on [AWS Fargate](https://aws.amazon.com/fargate/) running the proxy, with [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/what-is-application-auto-scaling.html) on CPU and [CloudWatch](https://aws.amazon.com/cloudwatch/) logs / Container Insights | 🟢 Always on · deleted with stack |
+| **CI/CD** | [CodePipeline](https://aws.amazon.com/codepipeline/) (Source → Build → Deploy) with [CodeBuild](https://aws.amazon.com/codebuild/), triggered by an [EventBridge](https://aws.amazon.com/eventbridge/) rule on each commit (plus their [IAM](https://aws.amazon.com/iam/) roles; hence `CAPABILITY_IAM`) | 🟡 Runs on commit only, not in the traffic path · deleted with stack |
+| **CI/CD** | One-time bootstrap: an [AWS Lambda](https://aws.amazon.com/lambda/) custom resource and a bootstrap CodeBuild project (and their roles) that seed CodeCommit and build the first image | ⚪ Used once at creation, then idle (no ongoing cost) · removed on stack deletion |
+| **CI/CD** | [ECR](https://aws.amazon.com/ecr/) repository (scan-on-push), [CodeCommit](https://docs.aws.amazon.com/codecommit/latest/userguide/welcome.html) repository (the editable proxy source, seeded once from `SourceRepoUrl`/`ProxyEngine`), and the [S3](https://aws.amazon.com/s3/) artifact bucket | 🔒 **Retained on deletion** so images and customizations survive (see [Cleanup](#cleanup)) |
 
 **NOTE** On first-time ECS use, a service-linked role is created for you. If the stack fails because the role wasn't created in time, delete the failed stack and redeploy.
 
@@ -142,7 +149,7 @@ The stack deploys:
 ## Deployment Validation
 
 * In the AWS CloudFormation console, confirm the stack deployed without errors.
-* In the Amazon ECS console, confirm the cluster **{STACK_NAME}-NginxCluster-%random%** has 3 running tasks.
+* In the Amazon ECS console, confirm the cluster **{STACK_NAME}-ProxyCluster-%random%** has 3 running tasks.
 
 ## Running the Guidance
 
@@ -164,6 +171,24 @@ curl https://yourvpclatticeservice.name \
 
 You can test this with the [setcredentials.sh](./scripts/setcredentials.sh) and [callendpoint.sh](./scripts/callendpoint.sh) scripts in this repo.
 
+## Cleanup
+
+1. **Delete the stack** — removes everything except the three retained resources below.
+
+```
+aws cloudformation delete-stack --stack-name guidance-vpclattice-external --region {YOUR_REGION}
+```
+
+2. **Manually remove the retained resources** if you no longer need them. These are kept on purpose so a stack deletion never destroys your images or customizations:
+
+| Resource | Why it's retained | Deleting it means |
+|---|---|---|
+| ECR repository | Holds your proxy container images | Losing all built images |
+| CodeCommit repository | Holds your committed proxy customizations | **Losing your proxy source edits** |
+| S3 artifact bucket | Holds pipeline artifacts | Losing pipeline run history |
+
+> ⚠️ Deleting the CodeCommit repository is irreversible and removes any proxy changes you committed. Clone or back it up first if you might redeploy later.
+
 ## Next Steps
 
 ### Security
@@ -171,46 +196,6 @@ You can test this with the [setcredentials.sh](./scripts/setcredentials.sh) and 
 The proxy runs in private subnets and reaches AWS services through [PrivateLink interface endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/create-interface-endpoint.html), so no [NAT gateways](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html) are needed. A [security group](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-security-groups.html) on the NLB restricts inbound traffic to your allowed CIDR blocks.
 
 Because this is **external** connectivity over the public internet, the Guidance is **TLS-only by default**: the proxy exposes only port 443 and does TLS passthrough (reading the SNI without decrypting), keeping traffic encrypted end-to-end to the VPC Lattice service. Enforce HTTPS on your VPC Lattice services accordingly (an HTTPS listener with a certificate and custom domain). Port 80 is intentionally not exposed; if you need it, [customizations/](/customizations/) shows how to add it back with the relevant caveats.
-
-### Proxy Configuration
-
-The proxy source lives in this repo under [`proxies/<engine>/`](/proxies/) (for the default engine, [`proxies/nginx/`](/proxies/nginx/)): the `Dockerfile`, the proxy configuration, and the `buildspec.yml`. At stack creation this directory is seeded into the CodeCommit repository, which becomes the editable source of truth. **To change the proxy, commit to the CodeCommit repository** (clone URL is in the `ProxySourceRepoCloneUrlHttp` stack output) - a commit automatically triggers the pipeline to build a new immutable image and roll it out to ECS. You can also point `SourceRepoUrl` at your own fork to bootstrap from custom code.
-
-The NGINX image is based on the official, maintained `nginx` image (Alpine variant) pulled from Amazon ECR Public, pinned via the `NGINX_VERSION` build argument in the [Dockerfile](/proxies/nginx/Dockerfile). The Alpine image is compiled with the stream module built in, so - unlike a package-based install - there is **no `load_module` directive** in `nginx.conf`.
-
-The stream listener reads the SNI header to understand where the traffic is destined to, it uses the Amazon provided DNS endpoint at `169.254.169.253` for resolution which supplies a zonal response for the VPC Lattice service. The downstream endpoint is reached using the following directive `proxy_pass $ssl_preread_server_name:$server_port`
-
-```
-server {
-    listen 443 proxy_protocol;
-    proxy_pass $ssl_preread_server_name:$server_port;
-    ssl_preread on;
-    set_real_ip_from 192.168.0.0/16;
-}
-```
-Proxy protocol is configured thus `listen 443 proxy_protocol`. This configuration trusts the NLB to pass **true** source IP information to the NGINX proxy `set_real_ip_from 192.168.0.0/16`.
-
-Logs go straight to the per-task CloudWatch Logs group:
-
-```
-log_format  basic   '$time_iso8601 $remote_addr $proxy_protocol_addr $proxy_protocol_port $protocol $server_port '
-                '$status $upstream_addr $upstream_bytes_sent $upstream_bytes_received $session_time  $upstream_connect_time';
-
-access_log  /var/log/nginx/stream_access.log basic if=$notAHealthCheck;
-error_log   /var/log/nginx/stream_error.log crit;
-
-```
-
-This `map` keeps health-check noise out of the logs:
-
-```
-map $bytes_received $notAHealthCheck {
-    "~0"            0;
-    default         1;
-}
-```
-
-Only the `stream` listener on port 443 is configured by default (TLS-only — see [Security](#security)). To add an HTTP listener, see [customizations/](/customizations/).
 
 ### Scaling
 
@@ -245,17 +230,15 @@ The ECS service uses [Container Insights](https://docs.aws.amazon.com/AmazonClou
 
 ### Performance
 
-We load-tested the Guidance with the following setup:
+We load-tested the Guidance against an [AWS Lambda](https://aws.amazon.com/lambda/) VPC Lattice service (concurrency raised to 3000 from the 1000 base), driving 5000 remote users at ~3000 requests/second for 20 minutes with a 5-minute ramp-up. The test setup:
 
-* Region: us-west-2
-* Published VPC Lattice service: [AWS Lambda](https://aws.amazon.com/lambda/) (a simple function with concurrency raised to 3000 from the 1000 base)
-* External access via a three-zone NLB using DNS round-robin
-* Cross-zone load balancing **off** on the NLB (it performed worse in tests)
-* Three zonal Fargate tasks bound to the NLB, each 2048 CPU units / 4096 MB RAM
+| Setting | Value |
+|---|---|
+| Region | us-west-2 |
+| Ingress | Three-zone NLB, DNS round-robin, cross-zone balancing **off** (it performed worse in tests) |
+| Proxy | Three zonal Fargate tasks, 2048 CPU / 4096 MB each |
 
-The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](/load-test/distributed-load-testing-on-aws.template).
-
-Results below cover harness, NLB, VPC Lattice, and Lambda performance for 5000 remote users generating ~3000 requests/second, sustained for 20 minutes with a 5-minute ramp-up.
+The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](/load-test/distributed-load-testing-on-aws.template). Results below cover harness, NLB, VPC Lattice, and Lambda performance.
 
 **Harness Performance**
 
@@ -275,26 +258,11 @@ Results below cover harness, NLB, VPC Lattice, and Lambda performance for 5000 r
 
 ![image](/img/perf-testing-lattice.png)
 
-## Cleanup
-
-1. Remove the stack created at deployment.
-
-**NOTE** A few resources are intentionally retained (`DeletionPolicy: Retain`) so you don't lose data or customizations when the stack is deleted, and must be removed manually if you no longer need them:
-* The Amazon ECR repository (and its images).
-* The CodeCommit repository holding your proxy source (including any edits you committed).
-* The S3 artifact bucket used by the pipeline.
-
 ## FAQ, known issues, additional considerations, and limitations
 
 ### Considerations
 
-Key design choices and constraints:
-
-* The proxy provides **layer 4 connectivity and layer 3 security**; all layer 7 management stays with VPC Lattice.
-* **Authentication and authorization stay with VPC Lattice** — keep your service network and/or service authN/Z policies in place.
-* The proxy is a fleet of lightweight open-source NGINX tasks on ECS, fronted by an external NLB.
-* TLS connections are TCP-proxied (passthrough) using the SNI for dynamic endpoint lookup, so no certificates are managed between provider and proxy. HTTP proxying is opt-in via [customizations/](/customizations/) and not recommended for external exposure.
-* VPC Lattice services commonly use custom domains, which lets you use separate Route 53 hosted zones for different consumers (external users vs. the proxy).
+The proxy deliberately handles only **layer 4 connectivity and layer 3 security**, leaving all layer 7 concerns — including authentication and authorization — to VPC Lattice, so you should keep your service network and service authN/Z policies in place. It runs as a fleet of lightweight open-source proxy tasks (NGINX or Envoy — see [Proxy engines](#proxy-engines)) on ECS behind an external NLB, TCP-proxying TLS connections by passthrough and using the SNI for dynamic endpoint lookup, which means no certificates are managed between the provider and the proxy. HTTP proxying is available only as an opt-in [customization](/customizations/) and is not recommended for external exposure. VPC Lattice services commonly use custom domains, which lets you use separate Route 53 hosted zones for different consumers (external users vs. the proxy).
 
 ## License
 
