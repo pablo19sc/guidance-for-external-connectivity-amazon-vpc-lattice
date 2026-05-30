@@ -9,10 +9,12 @@ FROM envoyproxy/envoy:${ENVOY_VERSION}
 COPY envoy.yaml /etc/envoy/envoy.yaml
 
 # The official Envoy image's entrypoint drops privileges to the non-root "envoy"
-# user (uid 101), so the container cannot bind port 443 (a privileged port) on its
-# own. The ECS task definition grants the NET_BIND_SERVICE Linux capability to
-# allow binding 443 while keeping Envoy non-root. (No TLS is terminated here, so no
-# keys are present in the image.)
+# user unless ENVOY_UID=0, which leaves the process running as root. Root is
+# required to bind port 443 (a privileged port); Fargate does not allow adding the
+# NET_BIND_SERVICE capability, so running as root is the supported approach (and
+# matches the NGINX container, whose master also runs as root to bind 443). No TLS
+# is terminated here, so no private keys are present in the image.
+ENV ENVOY_UID=0
 
 EXPOSE 443
 

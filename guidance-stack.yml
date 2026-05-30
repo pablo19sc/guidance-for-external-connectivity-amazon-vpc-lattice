@@ -39,10 +39,6 @@ Parameters:
 
 Conditions:
   Ipv6Provided: !Not [!Equals [!Ref AllowedIPv6Block, EMPTY]]
-  # Envoy's official image drops to the non-root 'envoy' user, so it needs the
-  # NET_BIND_SERVICE capability to bind port 443. NGINX runs its master as root
-  # and does not.
-  IsEnvoy: !Equals [!Ref ProxyEngine, envoy]
 
 Mappings:
   SubnetCIDR:
@@ -384,14 +380,6 @@ Resources:
           PortMappings:
             - ContainerPort: 443
               Protocol: tcp
-          # Envoy runs as a non-root user and needs NET_BIND_SERVICE to bind 443;
-          # NGINX binds it as root and needs no extra capability.
-          LinuxParameters: !If
-            - IsEnvoy
-            - Capabilities:
-                Add:
-                  - NET_BIND_SERVICE
-            - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs
             Options:
