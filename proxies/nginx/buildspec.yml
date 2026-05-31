@@ -1,0 +1,38 @@
+version: 0.2
+
+# Build and push the NGINX proxy image, then emit imagedefinitions.json for the
+# CodePipeline ECS deploy action.
+#
+# Expected environment variables (set by the CodeBuild project in the stack):
+#   AWS_REGION         - target region
+#   AWS_ACCOUNT_ID     - account ID
+#   ECR_REPOSITORY     - ECR repository name
+#   CONTAINER_NAME     - container name in the ECS task definition (e.g. "Nginx")
+#
+# IMAGE_TAG is derived from the CodePipeline source commit so every build produces
+# an immutable, traceable tag (no mutable :latest for deploys).
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%Y%m%d%H%M%S)}
+      - IMAGE_TAG=${IMAGE_TAG:0:12}
+      - REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+      - echo "Building image $REPO_URI:$IMAGE_TAG"
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t $REPO_URI:$IMAGE_TAG .
+  post_build:
+    commands:
+      - echo Pushing the Docker image...
+      - docker push $REPO_URI:$IMAGE_TAG
+      - echo Writing imagedefinitions.json...
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$REPO_URI:$IMAGE_TAG" > imagedefinitions.json
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json

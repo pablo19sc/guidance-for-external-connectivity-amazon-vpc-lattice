@@ -16,11 +16,34 @@ Parameters:
     Description: IPv4 CIDR block for the VPC
     AllowedPattern: "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:\\/(?:[0-9]|[1-2][0-9]|3[0-2]))$"
     ConstraintDescription: Must be a valid IPv4 CIDR block (e.g., 192.168.1.0/16)
+  ProxyEngine:
+    Type: String
+    Default: nginx
+    AllowedValues:
+      - nginx
+      - envoy
+    Description: >-
+      Proxy engine to deploy. The matching proxies/<engine>/ directory is seeded
+      into the CodeCommit repository at stack creation. NGINX is the simplest
+      TLS-passthrough option; Envoy provides the same passthrough behavior on a
+      more extensible data plane.
+  SourceRepoUrl:
+    Type: String
+    Default: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice.git
+    Description: >-
+      Git URL used ONCE at stack creation to seed the CodeCommit repository with the selected proxy source. Point this at your own fork to bootstrap from custom code.
+  SourceRepoBranch:
+    Type: String
+    Default: main
+    Description: Branch of SourceRepoUrl to seed the CodeCommit repository from.
 
 Conditions:
   Ipv6Provided: !Not [!Equals [!Ref AllowedIPv6Block, EMPTY]]
 
 Mappings:
+  # Maps each logical subnet name to its index (0-8) into the nine /24 blocks that
+  # !Cidr carves out of VpcCidr, giving every subnet a deterministic, non-overlapping
+  # range. The same index selects the matching IPv6 /64 from the VPC's /56.
   SubnetCIDR:
     Position: 
       PublicSubneta: 0
@@ -32,6 +55,10 @@ Mappings:
       EndpointSubneta: 6
       EndpointSubnetb: 7
       EndpointSubnetc: 8
+  # Short names for the AWS service suffix of each interface endpoint; the full
+  # ServiceName (com.amazonaws.<region>.<suffix>) is assembled where the endpoints
+  # are created. These are the endpoints Fargate needs to pull images, ship logs,
+  # and support ECS Exec without a NAT gateway.
   Endpoint:
     Type:
       ECRDKR: ecr.dkr
@@ -40,10 +67,6 @@ Mappings:
       SSM: ssm
       SSMMessages: ssmmessages
       EC2Messages: ec2messages
-  Protocol:
-    Port:
-      HTTP: 80
-      HTTPS: 443
 
 Resources:
   # ---------- AMAZON VPC RESOURCES ----------
@@ -87,9 +110,16 @@ Resources:
           # Subnets
         - '${SubnetType}Subnet${AvailabilityZone}':
             Type: AWS::EC2::Subnet
+            # Ensure the Amazon-provided IPv6 CIDR is associated to the VPC before
+            # subnets evaluate !Select [0, VPC.Ipv6CidrBlocks]; otherwise the list is
+            # empty and deployment fails with "Fn::Select cannot select nonexistent
+            # value at index 0".
+            DependsOn: IPv6CidrBlock
             Properties:
               VpcId: !Ref VPC
               AvailabilityZone: !Sub ${AWS::Region}${AvailabilityZone}
+              # IPv4: split VpcCidr into 9 equal blocks and take this subnet's slot.
+              # IPv6: split the VPC's Amazon-provided /56 into /64s and take the same slot.
               CidrBlock: !Select [!FindInMap [SubnetCIDR, Position, 'Fn::Sub': '${SubnetType}Subnet${AvailabilityZone}'], !Cidr [!Ref VpcCidr, 9, 8 ]]
               Ipv6CidrBlock: !Select [!FindInMap [SubnetCIDR, Position, 'Fn::Sub': '${SubnetType}Subnet${AvailabilityZone}'], !Cidr [!Select [0, !GetAtt VPC.Ipv6CidrBlocks], 9, 64 ]]
               Tags:
@@ -166,6 +196,8 @@ Resources:
           VpcEndpointType: Interface
           VpcId: !Ref VPC
 
+  # ECR stores image layers in S3, so pulling images needs an S3 path. A gateway
+  # endpoint (route-table based, no ENI/hourly cost) covers it without a NAT gateway.
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties: 
@@ -179,60 +211,54 @@ Resources:
 
   # ---------- SECURITY GROUPS ----------
   # Network Load Balancer
-  NginxNLBSG:
+  ProxyNLBSG:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: NGINX NLB Security Group
+      GroupDescription: Proxy NLB Security Group
       Tags:
         - Key: Name
           Value: !Join
             - '-'
-            - - !Sub nlb-sg
+            - - !Sub '${ProxyEngine}-nlb-sg'
               - !Ref AWS::StackName
 
-  # For::Each iteration: per port (HTTP, HTTPS)
-  # IPv4 Ingress rules (NLB) & Egress ruless
-  'Fn::ForEach::NginxNLBSecurityGroup':
-    - Port
-    - [HTTP, HTTPS]
-    - 'NginxNLBSGIPv4Ingress${Port}':
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref NginxNLBSG
-          CidrIp: !Ref AllowedIPv4Block
-          IpProtocol: 'tcp'
-          FromPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-          ToPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-      'NginxNLBSGEgress${Port}':
-        Type: AWS::EC2::SecurityGroupEgress
-        Properties:
-          GroupId: !Ref NginxNLBSG
-          DestinationSecurityGroupId: !Ref NginxECSSG
-          IpProtocol: 'tcp'
-          FromPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-          ToPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-  
-  # IPv6 Ingress rules (NLB) - if provided
-  'Fn::ForEach::IPv6NginxNLBSecurityGroup':
-    - Port
-    - [HTTP, HTTPS]
-    - 'NginxNLBSGIPv6Ingress${Port}':
-        Type: AWS::EC2::SecurityGroupIngress
-        Condition: Ipv6Provided
-        Properties:
-          GroupId: !Ref NginxNLBSG
-          CidrIpv6: !Ref AllowedIPv6Block
-          IpProtocol: 'tcp'
-          FromPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-          ToPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
+  # IPv4 Ingress rule (NLB) & Egress rule (TLS-only: port 443)
+  ProxyNLBSGIPv4IngressHTTPS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ProxyNLBSG
+      CidrIp: !Ref AllowedIPv4Block
+      IpProtocol: 'tcp'
+      FromPort: 443
+      ToPort: 443
+
+  ProxyNLBSGEgressHTTPS:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ProxyNLBSG
+      DestinationSecurityGroupId: !Ref ProxyECSSG
+      IpProtocol: 'tcp'
+      FromPort: 443
+      ToPort: 443
+
+  # IPv6 Ingress rule (NLB) - if provided
+  ProxyNLBSGIPv6IngressHTTPS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: Ipv6Provided
+    Properties:
+      GroupId: !Ref ProxyNLBSG
+      CidrIpv6: !Ref AllowedIPv6Block
+      IpProtocol: 'tcp'
+      FromPort: 443
+      ToPort: 443
 
   # ECS Cluster
-  NginxECSSG:
+  ProxyECSSG:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: NGINX (ECS) Security group
+      GroupDescription: Proxy (ECS) Security group
       SecurityGroupEgress:
         - CidrIp: 0.0.0.0/0
           IpProtocol: '-1'
@@ -240,22 +266,18 @@ Resources:
         - Key: Name
           Value: !Join
             - '-'
-            - - !Sub nginx-sg
+            - - !Sub '${ProxyEngine}-ecs-sg'
               - !Ref AWS::StackName
   
-  # For::Each iteration: per port (HTTP, HTTPS)
-  # Egress rules (ECS)
-  'Fn::ForEach::NginxECSSecurityGroup':
-    - Port
-    - [HTTP, HTTPS]
-    - 'NginxECSSGIngress${Port}':
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref NginxECSSG
-          SourceSecurityGroupId: !Ref NginxNLBSG
-          IpProtocol: 'tcp'
-          FromPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
-          ToPort: !FindInMap [Protocol, Port, 'Fn::Sub': '${Port}']
+  # ECS ingress rule from the NLB (TLS-only: port 443)
+  ProxyECSSGIngressHTTPS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ProxyECSSG
+      SourceSecurityGroupId: !Ref ProxyNLBSG
+      IpProtocol: 'tcp'
+      FromPort: 443
+      ToPort: 443
 
   # VPC endpoints
   EndpointSecurityGroup:
@@ -280,23 +302,25 @@ Resources:
               - !Ref AWS::StackName
 
   # ---------- NETWORK LOAD BALANCER ----------
-  NginxNLB:
+  ProxyNLB:
     Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
     Properties:
       IpAddressType: dualstack
       Scheme: internet-facing
       Type: network
       SecurityGroups: 
-        - !Ref NginxNLBSG
+        - !Ref ProxyNLBSG
       Subnets:
         - !Ref PublicSubneta
         - !Ref PublicSubnetb
         - !Ref PublicSubnetc
 
   # Target Group: 443
-  NginxNLBTGroupHTTPS:
+  ProxyNLBTGroupHTTPS:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
+      # Aggressive health checks (5s interval, 2s timeout, 3 checks) so an unhealthy
+      # task is rotated out, and a new one brought in, quickly under autoscaling.
       HealthCheckIntervalSeconds: 5
       HealthCheckTimeoutSeconds: 2
       HealthyThresholdCount: 3
@@ -304,6 +328,9 @@ Resources:
       Port: 443
       Protocol: TCP
       TargetGroupAttributes:
+        # The NLB does TLS passthrough, so the proxy never sees the client IP at the
+        # TCP layer. PROXY protocol v2 prepends the real client IP/port, which nginx
+        # (proxy_protocol) and Envoy (proxy_protocol listener filter) parse back out.
         - Key: proxy_protocol_v2.enabled
           Value: true
       TargetType: ip
@@ -311,42 +338,14 @@ Resources:
       VpcId: !Ref VPC
 
   # Listener: 443
-  NginxNLBListenerHTTPS:
+  ProxyNLBListenerHTTPS:
     Type: 'AWS::ElasticLoadBalancingV2::Listener'
     Properties:
       DefaultActions:
-        - TargetGroupArn: !Ref NginxNLBTGroupHTTPS
+        - TargetGroupArn: !Ref ProxyNLBTGroupHTTPS
           Type: forward
-      LoadBalancerArn: !Ref NginxNLB
+      LoadBalancerArn: !Ref ProxyNLB
       Port: 443
-      Protocol: TCP
-
-  # Target Group: 80
-  NginxNLBTGroupHTTP:
-    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
-    Properties:
-      HealthCheckIntervalSeconds: 5
-      HealthCheckTimeoutSeconds: 2
-      HealthyThresholdCount: 3
-      IpAddressType: ipv4
-      Port: 80
-      Protocol: TCP
-      TargetGroupAttributes:
-        - Key: proxy_protocol_v2.enabled
-          Value: true
-      TargetType: ip
-      UnhealthyThresholdCount: 3
-      VpcId: !Ref VPC
-
-  # Listener: 80
-  NginxNLBListenerHTTP:
-    Type: 'AWS::ElasticLoadBalancingV2::Listener'
-    Properties:
-      DefaultActions:
-        - TargetGroupArn: !Ref NginxNLBTGroupHTTP
-          Type: forward
-      LoadBalancerArn: !Ref NginxNLB
-      Port: 80
       Protocol: TCP
 
   # ---------- AMAZON ECR REPOSITORY ----------
@@ -354,9 +353,24 @@ Resources:
     Type: AWS::ECR::Repository
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    Properties:
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  # ---------- CODECOMMIT (proxy source of truth) ----------
+  # Seeded once at stack creation from SourceRepoUrl with the selected proxy engine.
+  # After deployment this is the user-editable source: a commit triggers the pipeline.
+  # Retained on stack deletion so proxy customizations committed here are not lost.
+  ProxySourceRepo:
+    Type: AWS::CodeCommit::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub '${AWS::StackName}-${ProxyEngine}-source'
+      RepositoryDescription: !Sub 'Editable proxy source for ${AWS::StackName}. Commits trigger build and deploy.'
 
   # ---------- ECS CLUSTER ----------
-  NginxCluster:
+  ProxyCluster:
     Type: 'AWS::ECS::Cluster'
     Properties:
       CapacityProviders:
@@ -366,28 +380,31 @@ Resources:
           Value: enabled
 
   # ECS Task
-  NginxTask:
+  # Initial task definition references the image built by the bootstrap stage
+  # (tag: bootstrap). Subsequent deploys are driven by CodePipeline's ECS deploy
+  # action, which registers new task-def revisions with immutable commit-based tags.
+  ProxyTask:
     DependsOn:
-      - DockerBuilderCustomResource
+      - ProxyBootstrapCustomResource
     Type: 'AWS::ECS::TaskDefinition'
     Properties:
-      ExecutionRoleArn: !Ref NginxTaskExecRole
+      ExecutionRoleArn: !GetAtt ProxyTaskExecRole.Arn
       NetworkMode: awsvpc
       ContainerDefinitions:
-        - Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LatticeExternalConnectivityECRRepo}:latest"
-          Name: Nginx
+        - Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LatticeExternalConnectivityECRRepo}:bootstrap"
+          Name: Proxy
           PortMappings:
             - ContainerPort: 443
-              Protocol: tcp
-            - ContainerPort: 80
               Protocol: tcp
           LogConfiguration:
             LogDriver: awslogs
             Options:
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-group: !Ref NginxLogGroup
+              awslogs-group: !Ref ProxyLogGroup
               awslogs-stream-prefix: lattice-externalconnectivity
           Ulimits:
+            # Raise the open-file-descriptor limit well above the default 1024 so the
+            # proxy can sustain a high number of concurrent connections.
             - HardLimit: 1048576
               Name: nofile
               SoftLimit: 1048576
@@ -395,41 +412,41 @@ Resources:
       Memory: 4096
       RequiresCompatibilities:
         - FARGATE
+      # ARM64 (Graviton) for better price/performance. The images are built ARM64 to
+      # match (CodeBuild ARM_CONTAINER), so this must stay aligned with the build.
       RuntimePlatform:
         CpuArchitecture: ARM64
         OperatingSystemFamily: LINUX
-      TaskRoleArn: !Ref NginxTaskRole
+      TaskRoleArn: !GetAtt ProxyTaskRole.Arn
 
   # ECS Service
-  NginxService:
+  ProxyService:
     Type: 'AWS::ECS::Service'
     DependsOn:
-      - NginxNLBListenerHTTPS
-      - NginxNLBListenerHTTP
+      - ProxyNLBListenerHTTPS
     Properties:
-      Cluster: !Ref NginxCluster
+      Cluster: !Ref ProxyCluster
+      # Enables ECS Exec (interactive shell into a task) for debugging; relies on the
+      # ssmmessages permissions granted to the task and task-execution roles below.
       EnableExecuteCommand: true
       LaunchType: FARGATE
       LoadBalancers:
-        - ContainerName: Nginx
+        - ContainerName: Proxy
           ContainerPort: 443
-          TargetGroupArn: !Ref NginxNLBTGroupHTTPS
-        - ContainerName: Nginx
-          ContainerPort: 80
-          TargetGroupArn: !Ref NginxNLBTGroupHTTP
+          TargetGroupArn: !Ref ProxyNLBTGroupHTTPS
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
-            - !Ref NginxECSSG
+            - !Ref ProxyECSSG
           Subnets:
             - !Ref PrivateSubneta
             - !Ref PrivateSubnetb
             - !Ref PrivateSubnetc
       SchedulingStrategy: REPLICA
-      TaskDefinition: !Ref NginxTask
+      TaskDefinition: !Ref ProxyTask
 
   # ECS Task Execution Role
-  NginxTaskExecRole:
+  ProxyTaskExecRole:
     Type: 'AWS::IAM::Role'
     Properties:
       AssumeRolePolicyDocument:
@@ -446,14 +463,27 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
+              # ECR pull: image-layer actions scoped to this repo; only the auth
+              # token call requires "*" (it does not support resource scoping).
               - Effect: Allow
                 Action:
-                  - 'ecr:GetAuthorizationToken'
                   - 'ecr:BatchCheckLayerAvailability'
                   - 'ecr:GetDownloadUrlForLayer'
                   - 'ecr:BatchGetImage'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${LatticeExternalConnectivityECRRepo}'
+              - Effect: Allow
+                Action: 'ecr:GetAuthorizationToken'
+                Resource: '*'
+              # Container log delivery, scoped to the proxy log group.
+              - Effect: Allow
+                Action:
                   - 'logs:CreateLogStream'
                   - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${ProxyCluster}:*'
+              # ECS Exec (SSM messages) requires "*" - these actions do not support
+              # resource-level scoping.
+              - Effect: Allow
+                Action:
                   - 'ssmmessages:CreateControlChannel'
                   - 'ssmmessages:CreateDataChannel'
                   - 'ssmmessages:OpenControlChannel'
@@ -461,7 +491,7 @@ Resources:
                 Resource: '*'
 
   # ECS Task Role
-  NginxTaskRole:
+  ProxyTaskRole:
     Type: 'AWS::IAM::Role'
     Properties:
       AssumeRolePolicyDocument:
@@ -478,6 +508,8 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
+              # ECS Exec (SSM messages) requires "*" - these actions do not support
+              # resource-level scoping.
               - Effect: Allow
                 Action:
                   - 'ssmmessages:CreateControlChannel'
@@ -487,31 +519,34 @@ Resources:
                 Resource: '*'
 
   # CloudWatch Log Group
-  NginxLogGroup:
+  ProxyLogGroup:
     Type: 'AWS::Logs::LogGroup'
     Properties:
-      LogGroupName: !Sub '/${NginxCluster}'
+      LogGroupName: !Sub '/${ProxyCluster}'
+      RetentionInDays: 90
 
   # AutoScaling - Scalable Target
-  NginxScalableTarget:
+  ProxyScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties: 
       MaxCapacity: 9
       MinCapacity: 3
-      ResourceId: !Join ['',['service/',!Ref NginxCluster,'/',!GetAtt NginxService.Name]]
-      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ResourceId: !Join ['',['service/',!Ref ProxyCluster,'/',!GetAtt ProxyService.Name]]
+      # RoleARN is intentionally omitted: Application Auto Scaling uses the
+      # AWSServiceRoleForApplicationAutoScaling_ECSService service-linked role
+      # automatically (created on first use).
       ScalableDimension: 'ecs:service:DesiredCount'
       ServiceNamespace: 'ecs'
       
   # AutoScaling Policy
-  NginxScalingPolicy:
+  ProxyScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties: 
-      PolicyName: !Join ['',['scaling-policy-',!GetAtt NginxService.Name]]
+      PolicyName: !Join ['',['scaling-policy-',!GetAtt ProxyService.Name]]
       PolicyType: 'TargetTrackingScaling'
-      ResourceId: !Join ['',['service/',!Ref NginxCluster,'/',!GetAtt NginxService.Name]]
+      ResourceId: !Join ['',['service/',!Ref ProxyCluster,'/',!GetAtt ProxyService.Name]]
       ScalableDimension: 'ecs:service:DesiredCount'
-      ScalingTargetId: !Ref NginxScalableTarget
+      ScalingTargetId: !Ref ProxyScalableTarget
       TargetTrackingScalingPolicyConfiguration:
         TargetValue: 70.0
         ScaleInCooldown: 60
@@ -519,9 +554,38 @@ Resources:
         PredefinedMetricSpecification:
           PredefinedMetricType: ECSServiceAverageCPUUtilization
 
-  # ---------- CUSTOM RESOURCE: START CODEBUILD TO BUILD AND PUSH DOCKER IMAGE FROM PUBLIC REPO NGINX CODE ----------
-  # IAM Role for CodeBuild
-  CodeBuildServiceRole:
+  # ========== CI/CD PIPELINE ==========
+  # Once running, you edit the proxy by committing to CodeCommit. Each commit flows
+  # through the pipeline:
+  #   1. Source  (CodePipeline) picks up the commit from CodeCommit.
+  #   2. Build   (CodeBuild) builds the image, tags it with the commit ID, pushes it
+  #              to ECR, and writes imagedefinitions.json for the deploy stage.
+  #   3. Deploy  (ECS) does a rolling update of the service to the new image.
+  #
+  # Before any of that can run, the bootstrap stage (a custom resource, further below)
+  # seeds CodeCommit from SourceRepoUrl and builds the initial ':bootstrap' image, so
+  # the ECS service has something to start from on first creation.
+
+  # ---------- PIPELINE ARTIFACT BUCKET ----------
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  # ---------- BOOTSTRAP (seed CodeCommit + build initial image) ----------
+  BootstrapProjectRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -532,7 +596,7 @@ Resources:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: CodeBuildLogs
+        - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -541,66 +605,42 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
-        - PolicyName: ECRAccess
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-bootstrap'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-bootstrap:*'
+        - PolicyName: CodeCommitSeed
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - ecr:GetAuthorizationToken
+                  - codecommit:GetRepository
+                  - codecommit:GetBranch
+                  - codecommit:GitPull
+                  - codecommit:GitPush
+                Resource: !GetAtt ProxySourceRepo.Arn
+        - PolicyName: ECRPush
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
                   - ecr:BatchCheckLayerAvailability
-                  - ecr:GetDownloadUrlForLayer
-                  - ecr:BatchGetImage
                   - ecr:InitiateLayerUpload
                   - ecr:UploadLayerPart
                   - ecr:CompleteLayerUpload
                   - ecr:PutImage
-                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${LatticeExternalConnectivityECRRepo}'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${LatticeExternalConnectivityECRRepo}'
               - Effect: Allow
-                Action:
-                  - ecr:GetAuthorizationToken
-                Resource: '*'
-        - PolicyName: IAMPermissions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - iam:DeletePolicyVersion
+                Action: ecr:GetAuthorizationToken
                 Resource: '*'
 
-  # IAM Role for Lambda function
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: CodeBuildAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - codebuild:StartBuild
-                  - codebuild:BatchGetBuilds
-                Resource: !GetAtt DockerBuildProject.Arn
-  
-  # CodeBuild project to build and push Docker image
-  DockerBuildProject:
+  BootstrapProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${AWS::StackName}-nginx-docker-build'
-      Description: 'Build NGINX Docker image for VPC Lattice external connectivity guidance'
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Name: !Sub '${AWS::StackName}-${ProxyEngine}-bootstrap'
+      Description: 'Seed CodeCommit from SourceRepoUrl and build the initial proxy image'
+      ServiceRole: !GetAtt BootstrapProjectRole.Arn
       Artifacts:
         Type: NO_ARTIFACTS
       Environment:
@@ -611,42 +651,106 @@ Resources:
         EnvironmentVariables:
           - Name: ECR_REPOSITORY
             Value: !Ref LatticeExternalConnectivityECRRepo
-          - Name: AWS_REGION
-            Value: !Ref 'AWS::Region'
           - Name: AWS_ACCOUNT_ID
             Value: !Ref 'AWS::AccountId'
+          - Name: CC_REPO_NAME
+            Value: !GetAtt ProxySourceRepo.Name
+          - Name: CC_BRANCH
+            Value: !Ref SourceRepoBranch
+          - Name: SOURCE_REPO_URL
+            Value: !Ref SourceRepoUrl
+          - Name: SOURCE_REPO_BRANCH
+            Value: !Ref SourceRepoBranch
+          - Name: PROXY_ENGINE
+            Value: !Ref ProxyEngine
       Source:
-        Type: GITHUB
-        Location: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice.git
+        Type: NO_SOURCE
         BuildSpec: |
           version: 0.2
           phases:
-            pre_build:
+            install:
               commands:
-                - echo Logging in to Amazon ECR...
-                - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-                - cd Dockerfiles/nginx
+                - pip install --quiet git-remote-codecommit
             build:
               commands:
-                - echo Building the Docker image...
-                - docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest .
+                - |
+                  set -euo pipefail
+                  if aws codecommit get-branch --repository-name "$CC_REPO_NAME" --branch-name "$CC_BRANCH" >/dev/null 2>&1; then
+                    echo "CodeCommit repo '$CC_REPO_NAME' already has branch '$CC_BRANCH'; skipping seed (preserving user edits)."
+                  else
+                    echo "Seeding CodeCommit repo '$CC_REPO_NAME' (branch '$CC_BRANCH') from $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH, engine '$PROXY_ENGINE'"
+                    if ! git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" /tmp/src; then
+                      echo "ERROR: failed to clone $SOURCE_REPO_URL (branch $SOURCE_REPO_BRANCH)."
+                      echo "       Check SourceRepoUrl/SourceRepoBranch are correct and the branch is publicly reachable."
+                      exit 1
+                    fi
+                    if [ ! -d "/tmp/src/proxies/$PROXY_ENGINE" ]; then
+                      echo "ERROR: directory 'proxies/$PROXY_ENGINE' not found in $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH."
+                      echo "       Ensure the proxy engine '$PROXY_ENGINE' exists at that path on that branch."
+                      exit 1
+                    fi
+                    mkdir -p /tmp/seed
+                    cp -a "/tmp/src/proxies/$PROXY_ENGINE/." /tmp/seed/
+                    cd /tmp/seed
+                    git init -b "$CC_BRANCH"
+                    git config user.email "bootstrap@guidance.local"
+                    git config user.name "stack-bootstrap"
+                    git remote add origin "codecommit::$AWS_REGION://$CC_REPO_NAME"
+                    git add .
+                    git commit -m "Initial seed: $PROXY_ENGINE proxy from $SOURCE_REPO_URL@$SOURCE_REPO_BRANCH"
+                    git push origin "$CC_BRANCH"
+                    echo "Seed complete: pushed proxies/$PROXY_ENGINE to '$CC_REPO_NAME' branch '$CC_BRANCH'."
+                  fi
             post_build:
               commands:
-                - echo Pushing the Docker image...
-                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
-          artifacts:
-            files:
-              - imagedefinitions.json
-      TimeoutInMinutes: 15
+                - |
+                  set -euo pipefail
+                  echo "Building initial ':bootstrap' image for engine '$PROXY_ENGINE'"
+                  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+                  rm -rf /tmp/cc
+                  git clone --depth 1 "codecommit::$AWS_REGION://$CC_REPO_NAME" /tmp/cc
+                  cd /tmp/cc
+                  if ! docker build -t "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:bootstrap" .; then
+                    echo "ERROR: docker build failed. If this is the Envoy engine, a Docker Hub pull-rate"
+                    echo "       limit ('toomanyrequests') is a common cause - see proxies/envoy/."
+                    exit 1
+                  fi
+                  docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:bootstrap"
+                  echo "Pushed ':bootstrap' image to $ECR_REPOSITORY."
+      TimeoutInMinutes: 12
 
-  # Lambda function to trigger CodeBuild
-  DockerBuilderLambda:
+  # Lambda-backed custom resource: runs the bootstrap build on stack create and waits
+  # until the ':bootstrap' image exists in ECR before the ECS service is created.
+  BootstrapLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: BootstrapControl
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt BootstrapProject.Arn
+
+  BootstrapLambda:
     Type: AWS::Lambda::Function
     Properties:
       Handler: index.handler
-      Role: !GetAtt LambdaExecutionRole.Arn
+      Role: !GetAtt BootstrapLambdaRole.Arn
       Runtime: python3.13
-      Timeout: 300
+      Timeout: 900
       Code:
         ZipFile: |
           import boto3
@@ -660,72 +764,275 @@ Resources:
 
           def handler(event, context):
               logger.info('Received event: %s', json.dumps(event))
-              
-              # Get the physical resource ID or generate a new one
-              physical_id = event.get('PhysicalResourceId', None)
-              if not physical_id:
-                  physical_id = 'docker-builder-' + str(int(time.time()))
-              
-              # Skip processing for Delete events
+              physical_id = event.get('PhysicalResourceId') or 'proxy-bootstrap'
+
               if event['RequestType'] == 'Delete':
-                  logger.info('Delete request - no action needed')
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
                   return
-              
-              # Get properties from the event
-              properties = event['ResourceProperties']
-              project_name = properties.get('ProjectName')
-              
+
+              props = event['ResourceProperties']
+              project_name = props['ProjectName']
+
               try:
-                  # Initialize CodeBuild client
                   codebuild = boto3.client('codebuild')
-                  
-                  # Start the build
-                  logger.info('Starting CodeBuild project: %s', project_name)
-                  response = codebuild.start_build(projectName=project_name)
-                  build_id = response['build']['id']
-                  logger.info('Build started with ID: %s', build_id)
-                  
-                  # Wait for the build to complete
-                  build_complete = False
-                  build_status = None
-                  
-                  while not build_complete:
-                      time.sleep(10)  # Check every 10 seconds
-                      build_info = codebuild.batch_get_builds(ids=[build_id])
-                      build_status = build_info['builds'][0]['buildStatus']
-                      
-                      if build_status != 'IN_PROGRESS':
-                          build_complete = True
-                  
-                  logger.info('Build completed with status: %s', build_status)
-                  
-                  if build_status == 'SUCCEEDED':
-                      # Build succeeded
-                      response_data = {
-                          'Status': 'SUCCESS',
-                          'ImageUri': f"{properties.get('AccountId')}.dkr.ecr.{properties.get('Region')}.amazonaws.com/{properties.get('ECRRepositoryName')}:latest"
-                      }
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data, physical_id)
+                  build_id = codebuild.start_build(projectName=project_name)['build']['id']
+                  logger.info('Bootstrap build started: %s', build_id)
+
+                  # Poll until the build finishes, leaving headroom before Lambda timeout.
+                  deadline = time.time() + 840
+                  status = 'IN_PROGRESS'
+                  while status == 'IN_PROGRESS' and time.time() < deadline:
+                      time.sleep(15)
+                      status = codebuild.batch_get_builds(ids=[build_id])['builds'][0]['buildStatus']
+
+                  logger.info('Bootstrap build status: %s', status)
+                  if status == 'SUCCEEDED':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                       {'BuildId': build_id}, physical_id)
                   else:
-                      # Build failed
-                      response_data = {
-                          'Status': 'FAILED',
-                          'Reason': f"CodeBuild project {project_name} failed with status: {build_status}"
-                      }
-                      cfnresponse.send(event, context, cfnresponse.FAILED, response_data, physical_id)
-              
+                      cfnresponse.send(event, context, cfnresponse.FAILED,
+                                       {'Reason': f'Bootstrap build {build_id} status: {status}'},
+                                       physical_id)
               except Exception as e:
-                  logger.error('Error: %s', str(e))
+                  logger.exception('Bootstrap failed')
                   cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)}, physical_id)
 
-  # Custom resource to trigger the Docker build
-  DockerBuilderCustomResource:
-    Type: Custom::DockerBuilder
+  ProxyBootstrapCustomResource:
+    Type: Custom::ProxyBootstrap
+    DependsOn:
+      - ProxySourceRepo
     Properties:
-      ServiceToken: !GetAtt DockerBuilderLambda.Arn
-      ProjectName: !Ref DockerBuildProject
-      Version: '1.0.0' # Version/timestamp to force updates
+      ServiceToken: !GetAtt BootstrapLambda.Arn
+      ProjectName: !Ref BootstrapProject
+
+  # ---------- IMAGE BUILD (pipeline build stage) ----------
+  ImageBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-image-build'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-${ProxyEngine}-image-build:*'
+        - PolicyName: ECRPush
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${LatticeExternalConnectivityECRRepo}'
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+        - PolicyName: ArtifactAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub '${PipelineArtifactBucket.Arn}/*'
+
+  ImageBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AWS::StackName}-${ProxyEngine}-image-build'
+      Description: 'Build and push the proxy image from CodeCommit source (pipeline build stage)'
+      ServiceRole: !GetAtt ImageBuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPOSITORY
+            Value: !Ref LatticeExternalConnectivityECRRepo
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref 'AWS::AccountId'
+          - Name: CONTAINER_NAME
+            Value: Proxy
+      Source:
+        Type: CODEPIPELINE
+        # buildspec.yml is provided by the CodeCommit source (proxies/<engine>/buildspec.yml)
+      TimeoutInMinutes: 15
+
+  # ---------- CODEPIPELINE ----------
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt PipelineArtifactBucket.Arn
+                  - !Sub '${PipelineArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:CancelUploadArchive
+                Resource: !GetAtt ProxySourceRepo.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt ImageBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeTasks
+                  - ecs:ListTasks
+                  - ecs:RegisterTaskDefinition
+                  - ecs:UpdateService
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ProxyTaskExecRole.Arn
+                  - !GetAtt ProxyTaskRole.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+
+  ProxyPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                RepositoryName: !GetAtt ProxySourceRepo.Name
+                BranchName: !Ref SourceRepoBranch
+                # Polling disabled on purpose: the PipelineTriggerRule (EventBridge)
+                # starts the pipeline on each commit, which is faster than polling.
+                PollForSourceChanges: 'false'
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref ImageBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              Configuration:
+                ClusterName: !Ref ProxyCluster
+                ServiceName: !GetAtt ProxyService.Name
+                FileName: imagedefinitions.json
+              InputArtifacts:
+                - Name: BuildOutput
+
+  # EventBridge rule: trigger the pipeline on commits to the tracked branch.
+  PipelineTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartPipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProxyPipeline}'
+
+  PipelineTriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: !Sub 'Trigger ${AWS::StackName} proxy pipeline on CodeCommit commits'
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !GetAtt ProxySourceRepo.Arn
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref SourceRepoBranch
+      Targets:
+        - Arn: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProxyPipeline}'
+          Id: ProxyPipeline
+          RoleArn: !GetAtt PipelineTriggerRole.Arn
 
 Outputs:
   VpcId:
@@ -733,7 +1040,19 @@ Outputs:
     Value: !Ref VPC
   NLBDomainName:
     Description: NLB Domain Name
-    Value: !GetAtt NginxNLB.DNSName
+    Value: !GetAtt ProxyNLB.DNSName
   NLBHostedZoneId:
     Description: NLB Hosted Zone ID
-    Value: !GetAtt NginxNLB.CanonicalHostedZoneID
+    Value: !GetAtt ProxyNLB.CanonicalHostedZoneID
+  ProxySourceRepoCloneUrlHttp:
+    Description: HTTPS clone URL for the editable proxy source (CodeCommit). Commits trigger the pipeline.
+    Value: !GetAtt ProxySourceRepo.CloneUrlHttp
+  ProxySourceRepoName:
+    Description: CodeCommit repository name for the proxy source
+    Value: !GetAtt ProxySourceRepo.Name
+  ProxyPipelineName:
+    Description: CodePipeline that builds and deploys proxy changes
+    Value: !Ref ProxyPipeline
+  ECRRepositoryName:
+    Description: ECR repository holding the proxy images
+    Value: !Ref LatticeExternalConnectivityECRRepo

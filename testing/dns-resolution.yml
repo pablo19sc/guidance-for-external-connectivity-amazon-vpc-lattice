@@ -4,11 +4,11 @@ Description: DNS Resolution - Example
 Parameters:
   PrivateHostedZoneName:
     Type: String
-    Description: Private Hosted Zone Name (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneId
+    Description: Private Hosted Zone Name (for External Connectivity VPC resolution); specify either this value or PrivateHostedZoneId
     Default: "EMPTY"
   PrivateHostedZoneId:
     Type: String
-    Description: Private Hosted Zone ID (for External Connectivity VPC resolution) - specificy either this value for PrivateHostedZoneName
+    Description: Private Hosted Zone ID (for External Connectivity VPC resolution); specify either this value or PrivateHostedZoneName
     Default: "EMPTY"
   CustomDomainName:
     Type: String

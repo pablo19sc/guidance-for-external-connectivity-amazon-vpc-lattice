@@ -1,10 +1,19 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: VPC Lattice service - Example (VPC association)
+Description: VPC Lattice service - Example (VPC service network endpoint)
 
 Parameters:
   VpcId:
     Type: String
     Description: VPC ID (Ingress VPC)
+  VpcSubnetId1:
+    Type: String
+    Description: VPC Subnet 1 (Ingress VPC)
+  VpcSubnetId2:
+    Type: String
+    Description: VPC Subnet 2 (Ingress VPC)
+  VpcSubnetId3:
+    Type: String
+    Description: VPC Subnet 3 (Ingress VPC)
   CustomDomainName:
     Type: String
     Description: Custom Domain Name (VPC Lattice service)
@@ -13,11 +22,11 @@ Parameters:
     Description: Certificate ARN (for HTTPS connection)
   
 Resources:
-  # ---------- SERVICE NETWORK ----------
+  # ---------- SERVICE NETWORK ----------
   VPCLatticeServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
     Properties:
-      Name: vpc-lattice-service-network-association
+      Name: vpc-lattice-service-network-endpoint
       AuthType: AWS_IAM
   
   VPCLatticeServiceNetworkAuthPolicy:
@@ -30,18 +39,68 @@ Resources:
             Principal: '*'
             Action: '*'
             Resource: '*'
-  
-  VPCLatticeServiceNetworkVPCAssociation:
-    Type: AWS::VpcLattice::ServiceNetworkVpcAssociation
-    Properties:
-      ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
-      VpcIdentifier: !Ref VpcId
 
-  # ---------- SERVICE ----------
+  # ---------- SERVICE NETWORK ACCESS LOGS (to CloudWatch) ----------
+  ServiceNetworkLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/vpc-lattice/${AWS::StackName}-service-network'
+      RetentionInDays: 7
+
+  ServiceNetworkAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref VPCLatticeServiceNetwork
+      DestinationArn: !GetAtt ServiceNetworkLogGroup.Arn
+
+  # ---------- SERVICE NETWORK ENDPOINT ----------
+  VPCLatticeServiceNetworkEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: ServiceNetwork
+      IpAddressType: dualstack
+      SecurityGroupIds: 
+        - !Ref EndpointSecurityGroup
+      ServiceNetworkArn: !GetAtt VPCLatticeServiceNetwork.Arn
+      SubnetIds: 
+        - !Ref VpcSubnetId1
+        - !Ref VpcSubnetId2
+        - !Ref VpcSubnetId3
+      Tags: 
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - sn-endpoint
+              - !Ref AWS::StackName
+  
+  EndpointSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: VPC Endpoint Security Group (service network)
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: Ingress rule for HTTPS
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: '-1'
+          Description: Allow all egress
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - sn-endpoint-sg
+              - !Ref AWS::StackName
+  
+  # ---------- SERVICE ----------
   VPCLatticeService:
     Type: AWS::VpcLattice::Service
     Properties:
-      Name: vpc-lattice-service-association
+      Name: vpc-lattice-service-endpoint
       AuthType: AWS_IAM 
       CustomDomainName: !Ref CustomDomainName
       CertificateArn: !Ref CertificateArn
@@ -63,35 +122,22 @@ Resources:
       ServiceIdentifier: !Ref VPCLatticeService
       ServiceNetworkIdentifier: !Ref VPCLatticeServiceNetwork
 
-  # ---------- TARGET GROUP ----------
+  # ---------- TARGET GROUP ----------
   VPCLatticeLambdaTarget:
     Type: AWS::VpcLattice::TargetGroup
     Properties:
-      Name: lambda-target-association
+      Name: lambda-target-endpoint
       Type: LAMBDA
       Targets:
         - Id: !GetAtt LambdaFunction.Arn
 
-  # ---------- LISTENERS ----------
-  # HTTP
-  VPCLatticeServiceListenerHTTP:
-    Type: AWS::VpcLattice::Listener
-    Properties:
-      DefaultAction: 
-        Forward:
-          TargetGroups:
-            - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
-              Weight: 1
-      Name: http-80
-      Port: 80
-      Protocol: HTTP
-      ServiceIdentifier: !Ref VPCLatticeService
-
-  # HTTPS
+  # ---------- LISTENERS ----------
+  # HTTPS only (TLS-only best practice). To add an HTTP listener for testing, see
+  # the snippets under proxies/customizations/.
   VPCLatticeServiceListenerHTTPS:
     Type: AWS::VpcLattice::Listener
     Properties:
-      DefaultAction: 
+      DefaultAction:
         Forward:
           TargetGroups:
             - TargetGroupIdentifier: !Ref VPCLatticeLambdaTarget
@@ -101,7 +147,7 @@ Resources:
       Protocol: HTTPS
       ServiceIdentifier: !Ref VPCLatticeService
   
-  # ---------- LAMBDA FUNCTION ----------
+  # ---------- LAMBDA FUNCTION ----------
   LambdaFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -150,7 +196,7 @@ Resources:
                   log.info("Received event: %s", json.dumps(event))
 
                   # Return value
-                  response = "Hello from " + region + ". Accessed via VPC association.\n"
+                  response = "Hello from " + region + ". Accessed via VPC service network endpoint.\n"
                   return {
                     "statusCode": 200,
                     "statusDescription": "200 OK",
@@ -169,10 +215,9 @@ Resources:
                   }
 
 Outputs:
-  VPCLatticeServiceDomainName:
-    Description: VPC Lattice service domain name
-    Value: !GetAtt VPCLatticeService.DnsEntry.DomainName
-  VPCLatticeServiceHostedZoneId:
-    Description: VPC Lattice service hosted zone ID
-    Value: !GetAtt VPCLatticeService.DnsEntry.HostedZoneId
-  
+  EndpointId:
+    Description: VPC Endpoint ID
+    Value: !GetAtt VPCLatticeServiceNetworkEndpoint.Id
+  VPCLatticeServiceArn:
+    Description: VPC Lattice Service ARN
+    Value: !GetAtt VPCLatticeService.Arn

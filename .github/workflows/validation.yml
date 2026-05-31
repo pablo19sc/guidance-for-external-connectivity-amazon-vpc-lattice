@@ -1,0 +1,89 @@
+# Validation workflow: lints and validates the CloudFormation templates and the
+# proxy code. Runs on every branch push and on pull requests.
+#
+# Most of these checks also run locally via pre-commit (.pre-commit-config.yaml);
+# cfn-nag runs in CI only.
+name: Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cfn-lint:
+    name: cfn-lint (templates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cfn-lint
+      - name: Lint CloudFormation
+        run: cfn-lint   # uses .cfnlintrc (templates + ignore_checks)
+
+  cfn-security:
+    name: CloudFormation security (checkov + cfn-nag)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install checkov
+      - name: Checkov (testing/ templates)
+        run: checkov --config-file .checkov.yml
+      # cfn-nag scans the raw template; like checkov it cannot expand the
+      # AWS::LanguageExtensions transform, so it is scoped to the plain testing/
+      # templates. The main stack is covered by cfn-lint.
+      - name: cfn-nag (testing/ templates)
+        uses: stelligent/cfn_nag@master
+        with:
+          input_path: testing
+          extra_args: --fail-on-warnings
+
+  dockerfiles:
+    name: hadolint (Dockerfiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint NGINX Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: proxies/nginx/Dockerfile
+      - name: Lint Envoy Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: proxies/envoy/Dockerfile
+
+  shell:
+    name: shellcheck (scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+
+  proxy-configs:
+    name: Proxy config validation (nginx -t / envoy validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate NGINX config
+        run: ./.github/scripts/validate-nginx.sh
+      - name: Validate Envoy config
+        run: ./.github/scripts/validate-envoy.sh
+
+  markdown-links:
+    name: Markdown link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check links
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: "yes"
+          config-file: .github/markdown-link-check.json
