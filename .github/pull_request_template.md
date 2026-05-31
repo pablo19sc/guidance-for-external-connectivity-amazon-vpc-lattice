@@ -39,7 +39,7 @@ use https://aws.amazon.com/security/vulnerability-reporting/ instead.
 
 ## Pre-commit / validation checklist
 
-> These mirror the CI checks in [`.github/workflows/validation.yml`](.github/workflows/validation.yml).
+> These mirror the CI checks in [`.github/workflows/validation.yml`](workflows/validation.yml).
 > Run them locally first: `pip install pre-commit && pre-commit install`, then `pre-commit run --all-files`.
 
 - [ ] I ran `pre-commit run --all-files` and all hooks pass.

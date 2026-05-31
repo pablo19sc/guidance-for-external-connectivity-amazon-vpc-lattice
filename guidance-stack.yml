@@ -388,7 +388,7 @@ Resources:
       - ProxyBootstrapCustomResource
     Type: 'AWS::ECS::TaskDefinition'
     Properties:
-      ExecutionRoleArn: !Ref ProxyTaskExecRole
+      ExecutionRoleArn: !GetAtt ProxyTaskExecRole.Arn
       NetworkMode: awsvpc
       ContainerDefinitions:
         - Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LatticeExternalConnectivityECRRepo}:bootstrap"
@@ -417,7 +417,7 @@ Resources:
       RuntimePlatform:
         CpuArchitecture: ARM64
         OperatingSystemFamily: LINUX
-      TaskRoleArn: !Ref ProxyTaskRole
+      TaskRoleArn: !GetAtt ProxyTaskRole.Arn
 
   # ECS Service
   ProxyService:
