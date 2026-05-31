@@ -2,7 +2,7 @@
 
 This Guidance builds a [serverless](https://aws.amazon.com/serverless/) proxy that lets clients **outside AWS** reach your [Amazon VPC Lattice](https://aws.amazon.com/vpc/lattice/) services.
 
-![image](./img/guidance-diagram-v2.png)
+![image](./img/guidance-diagram-v3.png)
 
 ## Table of Content
 
@@ -18,15 +18,12 @@ This Guidance builds a [serverless](https://aws.amazon.com/serverless/) proxy th
     - [DNS resolution configuration](#dns-resolution-configuration)
   - [Deployment Steps](#deployment-steps)
   - [Deployment Validation](#deployment-validation)
-  - [Running the Guidance](#running-the-guidance)
   - [Cleanup](#cleanup)
   - [Next Steps](#next-steps)
     - [Security](#security)
     - [Scaling](#scaling)
     - [Logging](#logging)
     - [Performance](#performance)
-  - [FAQ, known issues, additional considerations, and limitations](#faq-known-issues-additional-considerations-and-limitations)
-    - [Considerations](#considerations)
   - [License](#license)
   - [Contributing](#contributing)
   - [Authors](#authors)
@@ -43,10 +40,6 @@ A VPC Lattice service gets a globally resolvable DNS name, but outside its VPC t
 2. Several VPC Lattice services can share a single IP from those ranges.
 
 So you can't assume a service's IP is stable or unique. To handle this, each service associated to the network gets its own globally unique, externally resolvable domain name (resolving to a routable endpoint IP). **For hybrid and cross-Region access**, service network endpoints are the recommended approach: you only configure the matching DNS resolution (hybrid or in the consumer VPC) to target the endpoint.
-
-![image](./img/vpc-lattice-diagram-crossRegion.png)
-
-![image](./img/vpc-lattice-diagram-hybrid.png)
 
 **For clients outside AWS with no private connectivity**, the IPs used to reach services can change as services are added. This Guidance front-ends VPC Lattice with a proxy layer that resolves services dynamically on each request, so a changing backend IP never breaks your clients, and you avoid discovering endpoint IPs and updating static configuration yourself.
 
@@ -107,7 +100,7 @@ This Guidance provides *access* to VPC Lattice services but **does not create an
 * a [service network VPC association](https://docs.aws.amazon.com/vpc-lattice/latest/ug/service-network-associations.html) (1 per VPC), or
 * one or more [service network VPC endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/access-with-service-network-endpoint.html) (check the subnet prerequisites carefully, mainly for IPv4).
 
-To test end-to-end consumption, use the templates in the [vpc-lattice_example](/vpc-lattice_example/) folder.
+To test end-to-end consumption, use the templates and scripts in the [testing](/testing/) folder, which has its own [README](/testing/README.md) covering how to deploy the test environment and validate reachability.
 
 ### DNS resolution configuration
 
@@ -118,7 +111,7 @@ After the ingress VPC and proxy are created and the VPC is associated (or an end
 
 For both records, we recommend an [ALIAS record](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-choosing-alias-non-alias.html).
 
-**NOTE** This Guidance does not create hosted zones or configure DNS. See [dns-resolution.yml](/vpc-lattice_example/dns-resolution.yml) in the [vpc-lattice_example](/vpc-lattice_example/) folder for an example.
+**NOTE** This Guidance does not create hosted zones or configure DNS. See [dns-resolution.yml](/testing/dns-resolution.yml) in the [testing](/testing/) folder for an example.
 
 ## Deployment Steps
 
@@ -131,12 +124,14 @@ For both records, we recommend an [ALIAS record](https://docs.aws.amazon.com/Rou
 aws cloudformation deploy --template-file ./guidance-stack.yml --stack-name guidance-vpclattice-external --parameter-overrides AllowedIPv4Block={YOUR_IPV4_BLOCK} AllowedIPv6Block={YOUR_IPV6_BLOCK} ProxyEngine=nginx --capabilities CAPABILITY_IAM
 ```
 
+2. Configure DNS resolution so clients can consume the VPC Lattice services (see above).
+
 The stack deploys three layers: the network path, the proxy that serves traffic, and a CI/CD pipeline to iterate on the proxy. The **Lifecycle** column shows what runs continuously, what only runs on demand, and what is kept when the stack is deleted:
 
 | Layer | Resources | Lifecycle |
 |---|---|---|
 | **Networking** | [VPC](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html) across 3 AZs (public/private/endpoint subnets, [route tables](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html), [Internet Gateway](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html)) and [PrivateLink endpoints](https://docs.aws.amazon.com/whitepapers/latest/aws-privatelink/what-are-vpc-endpoints.html) (so Fargate needs no NAT) | 🟢 Always on · deleted with stack |
-| **Ingress** | Internet-facing dualstack [NLB](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) + target group on a single **port-443** TCP listener (TLS-only; add HTTP via [customizations/](/customizations/)) | 🟢 Always on · deleted with stack |
+| **Ingress** | Internet-facing dualstack [NLB](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) + target group on a single **port-443** TCP listener (TLS-only; add HTTP via [proxies/customizations/](/proxies/customizations/)) | 🟢 Always on · deleted with stack |
 | **Ingress** | [ECS](https://aws.amazon.com/ecs/) [service](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_services.html) on [AWS Fargate](https://aws.amazon.com/fargate/) running the proxy, with [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/what-is-application-auto-scaling.html) on CPU and [CloudWatch](https://aws.amazon.com/cloudwatch/) logs / Container Insights | 🟢 Always on · deleted with stack |
 | **CI/CD** | [CodePipeline](https://aws.amazon.com/codepipeline/) (Source → Build → Deploy) with [CodeBuild](https://aws.amazon.com/codebuild/), triggered by an [EventBridge](https://aws.amazon.com/eventbridge/) rule on each commit (plus their [IAM](https://aws.amazon.com/iam/) roles; hence `CAPABILITY_IAM`) | 🟡 Runs on commit only, not in the traffic path · deleted with stack |
 | **CI/CD** | One-time bootstrap: an [AWS Lambda](https://aws.amazon.com/lambda/) custom resource and a bootstrap CodeBuild project (and their roles) that seed CodeCommit and build the first image | ⚪ Used once at creation, then idle (no ongoing cost) · removed on stack deletion |
@@ -144,32 +139,14 @@ The stack deploys three layers: the network path, the proxy that serves traffic,
 
 **NOTE** On first-time ECS use, a service-linked role is created for you. If the stack fails because the role wasn't created in time, delete the failed stack and redeploy.
 
-2. Configure DNS resolution so clients can consume the VPC Lattice services (see above).
-
 ## Deployment Validation
 
-* In the AWS CloudFormation console, confirm the stack deployed without errors.
-* In the Amazon ECS console, confirm the cluster **{STACK_NAME}-ProxyCluster-%random%** has 3 running tasks.
+Confirm the deployment succeeded:
 
-## Running the Guidance
+* In the AWS CloudFormation console, the stack shows `CREATE_COMPLETE`.
+* In the Amazon ECS console, the cluster **{STACK_NAME}-ProxyCluster-%random%** has 3 running tasks.
 
-Once deployed, curl your NLB's DNS name (or your own alias record):
-
-```
-curl https://yourvpclatticeservice.name
-```
-
-If your VPC Lattice service or service network has authorization enabled, sign requests in the **same Region** you deployed the stack. This example uses curl's **--aws-sigv4** flag:
-
-```
-curl https://yourvpclatticeservice.name \
-    --aws-sigv4 "aws:amz:%region%:vpc-lattice-svcs" \
-    --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
-    --header "x-amz-security-token:$AWS_SESSION_TOKEN" \
-    --header "x-amz-content-sha256:UNSIGNED-PAYLOAD"
-```
-
-You can test this with the [setcredentials.sh](./scripts/setcredentials.sh) and [callendpoint.sh](./scripts/callendpoint.sh) scripts in this repo.
+To validate connectivity end-to-end (reach a VPC Lattice service through the proxy, signed or unsigned), use the [testing](/testing/) folder. Its [README](/testing/README.md) covers both validating an existing service network and deploying a self-contained test service, plus the `test-endpoint.sh` helper script.
 
 ## Cleanup
 
@@ -195,7 +172,9 @@ aws cloudformation delete-stack --stack-name guidance-vpclattice-external --regi
 
 The proxy runs in private subnets and reaches AWS services through [PrivateLink interface endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/create-interface-endpoint.html), so no [NAT gateways](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html) are needed. A [security group](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-security-groups.html) on the NLB restricts inbound traffic to your allowed CIDR blocks.
 
-Because this is **external** connectivity over the public internet, the Guidance is **TLS-only by default**: the proxy exposes only port 443 and does TLS passthrough (reading the SNI without decrypting), keeping traffic encrypted end-to-end to the VPC Lattice service. Enforce HTTPS on your VPC Lattice services accordingly (an HTTPS listener with a certificate and custom domain). Port 80 is intentionally not exposed; if you need it, [customizations/](/customizations/) shows how to add it back with the relevant caveats.
+Because this is **external** connectivity over the public internet, the Guidance is **TLS-only by default**: the proxy exposes only port 443 and does TLS passthrough (reading the SNI without decrypting), keeping traffic encrypted end-to-end to the VPC Lattice service. Enforce HTTPS on your VPC Lattice services accordingly (an HTTPS listener with a certificate and custom domain). Port 80 is intentionally not exposed; if you need it, [proxies/customizations/](/proxies/customizations/) shows how to add it back with the relevant caveats.
+
+By design, the proxy handles only **layer 4 connectivity and layer 3 security**; all layer 7 concerns, including authentication and authorization, stay with VPC Lattice. Keep your service network and service authN/Z policies in place, since the proxy does not enforce them.
 
 ### Scaling
 
@@ -204,7 +183,7 @@ The ECS service autoscales on average CPU. Under load testing the proxy was CPU-
 This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/services-that-can-integrate-ecs.html) target tracking with the `ECSServiceAverageCPUUtilization` predefined metric. You can swap in your own metric via a [`CustomizedMetricSpecification`](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration.html#cfn-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration-customizedmetricspecification). The default target is **70%** CPU; adjust it in the template:
 
 ```
-  NginxScalableTarget:
+  ProxyScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties: 
       MaxCapacity: 9
@@ -212,7 +191,7 @@ This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autosc
 ```
 
 ```
-  NginxScalingPolicy:
+  ProxyScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties: 
       .....
@@ -226,11 +205,11 @@ This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autosc
 
 The ECS service uses [Container Insights](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ContainerInsights.html) to capture performance data, written to CloudWatch Logs and viewable from the ECS or CloudWatch console.
 
-![img](/img/logging-container-insights.png)
+![image](./img/logging-container-insights.png)
 
 ### Performance
 
-We load-tested the Guidance against an [AWS Lambda](https://aws.amazon.com/lambda/) VPC Lattice service (concurrency raised to 3000 from the 1000 base), driving 5000 remote users at ~3000 requests/second for 20 minutes with a 5-minute ramp-up. The test setup:
+We load-tested the Guidance against an [AWS Lambda](https://aws.amazon.com/lambda/) VPC Lattice service (with concurrency raised to 3000 from the 1000 base). The load profile was 5000 remote users generating ~3000 requests/second, sustained for 20 minutes after a 5-minute ramp-up. The setup:
 
 | Setting | Value |
 |---|---|
@@ -238,31 +217,25 @@ We load-tested the Guidance against an [AWS Lambda](https://aws.amazon.com/lambd
 | Ingress | Three-zone NLB, DNS round-robin, cross-zone balancing **off** (it performed worse in tests) |
 | Proxy | Three zonal Fargate tasks, 2048 CPU / 4096 MB each |
 
-The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](/load-test/distributed-load-testing-on-aws.template). Results below cover harness, NLB, VPC Lattice, and Lambda performance.
+The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](/load-test/distributed-load-testing-on-aws.template). The results below show each layer in the path: the test harness, the NLB, the proxy (ECS), VPC Lattice, and the Lambda target.
 
-**Harness Performance**
+**Harness**
 
-![image](/img/perf-testing-harness.png)
+![image](./img/perf-testing-harness.png)
 
-![image](/img/perf-testing-percentiles.png)
+![image](./img/perf-testing-percentiles.png)
 
-**ECS Performance**
+**ECS proxy**
 
-![image](/img/perf-testing-ecs.png)
+![image](./img/perf-testing-ecs.png)
 
-**LAMBDA Performance**
+**Lambda target**
 
-![image](/img/perf-testing-lambda.png)
+![image](./img/perf-testing-lambda.png)
 
-**VPC Lattice Performance**
+**VPC Lattice**
 
-![image](/img/perf-testing-lattice.png)
-
-## FAQ, known issues, additional considerations, and limitations
-
-### Considerations
-
-The proxy deliberately handles only **layer 4 connectivity and layer 3 security**, leaving all layer 7 concerns (including authentication and authorization) to VPC Lattice, so you should keep your service network and service authN/Z policies in place. It runs as a fleet of lightweight open-source proxy tasks (NGINX or Envoy; see [Proxy engines](#proxy-engines)) on ECS behind an external NLB, TCP-proxying TLS connections by passthrough and using the SNI for dynamic endpoint lookup, which means no certificates are managed between the provider and the proxy. HTTP proxying is available only as an opt-in [customization](/customizations/) and is not recommended for external exposure. VPC Lattice services commonly use custom domains, which lets you use separate Route 53 hosted zones for different consumers (external users vs. the proxy).
+![image](./img/perf-testing-lattice.png)
 
 ## License
 
@@ -275,4 +248,4 @@ See [CONTRIBUTING](CONTRIBUTING.md) for more information.
 ## Authors
 
 * Pablo Sánchez Carmona, Senior Network Specialist Solutions Architect, AWS
-* Adam Palmer, Principal TPM, Kuiper
+* Adam Palmer, Principal Solutions Architect, Amazon Leo
