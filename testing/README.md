@@ -65,7 +65,7 @@ export NLB_HOSTED_ZONE_ID=$(aws cloudformation describe-stacks --stack-name $STA
 
 ```
 export CUSTOM_DOMAIN_NAME=service.example.com
-export CERTIFICATE_ARN=arn:aws:acm:eu-west-1:111122223333:certificate/abcd...
+export CERTIFICATE_ARN=arn:aws:acm:<region>:<account-id>:certificate/<certificate-id>
 export PUBLIC_HZ=ZXXXXXXXXXXXXX
 ```
 
