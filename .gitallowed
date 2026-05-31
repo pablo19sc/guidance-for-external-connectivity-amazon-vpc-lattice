@@ -1,8 +1,0 @@
-# Code Defender allow-list (false positives).
-# Each line is a regex; matching strings are excluded from secret scanning.
-#
-# Documentation placeholder ACM certificate ARN in testing/README.md.
-# Not a real credential: canonical AWS-docs fake account (111122223333) and
-# fake certificate id. Present in earlier commit history; kept here so the
-# push scan does not flag the historical occurrences.
-arn:aws:acm:eu-west-1:111122223333:certificate/abcd

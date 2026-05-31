@@ -52,7 +52,7 @@ The proxy runs as a fleet of containers on ECS/Fargate. You choose the engine at
 | **NGINX** | `nginx` *(default)* | You want the simplest, smallest TLS-passthrough proxy, just external reach to VPC Lattice. |
 | **Envoy** | `envoy` | You expect to grow past plain passthrough (L7 routing, gRPC, richer observability, xDS) and want that data plane as your baseline. |
 
-For how each engine works, how it's built, and how to edit it after deployment, see [`proxies/`](/proxies/).
+For how each engine works, how it's built, and how to edit it after deployment, see [`proxies/`](proxies/).
 
 ### Cost
 
@@ -100,7 +100,7 @@ This Guidance provides *access* to VPC Lattice services but **does not create an
 * a [service network VPC association](https://docs.aws.amazon.com/vpc-lattice/latest/ug/service-network-associations.html) (1 per VPC), or
 * one or more [service network VPC endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/access-with-service-network-endpoint.html) (check the subnet prerequisites carefully, mainly for IPv4).
 
-To test end-to-end consumption, use the templates and scripts in the [testing](/testing/) folder, which has its own [README](/testing/README.md) covering how to deploy the test environment and validate reachability.
+To test end-to-end consumption, use the templates and scripts in the [testing](testing/) folder, which has its own [README](testing/README.md) covering how to deploy the test environment and validate reachability.
 
 ### DNS resolution configuration
 
@@ -111,11 +111,11 @@ After the ingress VPC and proxy are created and the VPC is associated (or an end
 
 For both records, we recommend an [ALIAS record](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-choosing-alias-non-alias.html).
 
-**NOTE** This Guidance does not create hosted zones or configure DNS. See [dns-resolution.yml](/testing/dns-resolution.yml) in the [testing](/testing/) folder for an example.
+**NOTE** This Guidance does not create hosted zones or configure DNS. See [dns-resolution.yml](testing/dns-resolution.yml) in the [testing](testing/) folder for an example.
 
 ## Deployment Steps
 
-1. Deploy the [stack template](/guidance-stack.yml). Key parameters:
+1. Deploy the [stack template](guidance-stack.yml). Key parameters:
    * `AllowedIPv4Block` (required) and `AllowedIPv6Block` (optional): CIDR blocks allowed to reach the public NLB.
    * `VpcCidr`: VPC IPv4 CIDR, defaults to `192.168.1.0/16`.
    * `ProxyEngine`: proxy engine to deploy, `nginx` (default) or `envoy` (see [Proxy engines](#proxy-engines)).
@@ -131,7 +131,7 @@ The stack deploys three layers: the network path, the proxy that serves traffic,
 | Layer | Resources | Lifecycle |
 |---|---|---|
 | **Networking** | [VPC](https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html) across 3 AZs (public/private/endpoint subnets, [route tables](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html), [Internet Gateway](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html)) and [PrivateLink endpoints](https://docs.aws.amazon.com/whitepapers/latest/aws-privatelink/what-are-vpc-endpoints.html) (so Fargate needs no NAT) | 🟢 Always on · deleted with stack |
-| **Ingress** | Internet-facing dualstack [NLB](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) + target group on a single **port-443** TCP listener (TLS-only; add HTTP via [proxies/customizations/](/proxies/customizations/)) | 🟢 Always on · deleted with stack |
+| **Ingress** | Internet-facing dualstack [NLB](https://aws.amazon.com/elasticloadbalancing/network-load-balancer/) + target group on a single **port-443** TCP listener (TLS-only; add HTTP via [proxies/customizations/](proxies/customizations/)) | 🟢 Always on · deleted with stack |
 | **Ingress** | [ECS](https://aws.amazon.com/ecs/) [service](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_services.html) on [AWS Fargate](https://aws.amazon.com/fargate/) running the proxy, with [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/what-is-application-auto-scaling.html) on CPU and [CloudWatch](https://aws.amazon.com/cloudwatch/) logs / Container Insights | 🟢 Always on · deleted with stack |
 | **CI/CD** | [CodePipeline](https://aws.amazon.com/codepipeline/) (Source → Build → Deploy) with [CodeBuild](https://aws.amazon.com/codebuild/), triggered by an [EventBridge](https://aws.amazon.com/eventbridge/) rule on each commit (plus their [IAM](https://aws.amazon.com/iam/) roles; hence `CAPABILITY_IAM`) | 🟡 Runs on commit only, not in the traffic path · deleted with stack |
 | **CI/CD** | One-time bootstrap: an [AWS Lambda](https://aws.amazon.com/lambda/) custom resource and a bootstrap CodeBuild project (and their roles) that seed CodeCommit and build the first image | ⚪ Used once at creation, then idle (no ongoing cost) · removed on stack deletion |
@@ -146,7 +146,7 @@ Confirm the deployment succeeded:
 * In the AWS CloudFormation console, the stack shows `CREATE_COMPLETE`.
 * In the Amazon ECS console, the cluster **{STACK_NAME}-ProxyCluster-%random%** has 3 running tasks.
 
-To validate connectivity end-to-end (reach a VPC Lattice service through the proxy, signed or unsigned), use the [testing](/testing/) folder. Its [README](/testing/README.md) covers both validating an existing service network and deploying a self-contained test service, plus the `test-endpoint.sh` helper script.
+To validate connectivity end-to-end (reach a VPC Lattice service through the proxy, signed or unsigned), use the [testing](testing/) folder. Its [README](testing/README.md) covers both validating an existing service network and deploying a self-contained test service, plus the `test-endpoint.sh` helper script.
 
 ## Cleanup
 
@@ -172,13 +172,13 @@ aws cloudformation delete-stack --stack-name guidance-vpclattice-external --regi
 
 The proxy runs in private subnets and reaches AWS services through [PrivateLink interface endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/create-interface-endpoint.html), so no [NAT gateways](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html) are needed. A [security group](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-security-groups.html) on the NLB restricts inbound traffic to your allowed CIDR blocks.
 
-Because this is **external** connectivity over the public internet, the Guidance is **TLS-only by default**: the proxy exposes only port 443 and does TLS passthrough (reading the SNI without decrypting), keeping traffic encrypted end-to-end to the VPC Lattice service. Enforce HTTPS on your VPC Lattice services accordingly (an HTTPS listener with a certificate and custom domain). Port 80 is intentionally not exposed; if you need it, [proxies/customizations/](/proxies/customizations/) shows how to add it back with the relevant caveats.
+Because this is **external** connectivity over the public internet, the Guidance is **TLS-only by default**: the proxy exposes only port 443 and does TLS passthrough (reading the SNI without decrypting), keeping traffic encrypted end-to-end to the VPC Lattice service. Enforce HTTPS on your VPC Lattice services accordingly (an HTTPS listener with a certificate and custom domain). Port 80 is intentionally not exposed; if you need it, [proxies/customizations/](proxies/customizations/) shows how to add it back with the relevant caveats.
 
 By design, the proxy handles only **layer 4 connectivity and layer 3 security**; all layer 7 concerns, including authentication and authorization, stay with VPC Lattice. Keep your service network and service authN/Z policies in place, since the proxy does not enforce them.
 
 ### Scaling
 
-The ECS service autoscales on average CPU. Under load testing the proxy was CPU-bound at the chosen task sizes (see these [independent measurements](https://www.stormforge.io/blog/aws-fargate-network-performance/)). Adjust the metric to fit your workload by editing [guidance-stack.yml](/guidance-stack.yml).
+The ECS service autoscales on average CPU. Under load testing the proxy was CPU-bound at the chosen task sizes (see these [independent measurements](https://www.stormforge.io/blog/aws-fargate-network-performance/)). Adjust the metric to fit your workload by editing [guidance-stack.yml](guidance-stack.yml).
 
 This Guidance uses [Application Auto Scaling](https://docs.aws.amazon.com/autoscaling/application/userguide/services-that-can-integrate-ecs.html) target tracking with the `ECSServiceAverageCPUUtilization` predefined metric. You can swap in your own metric via a [`CustomizedMetricSpecification`](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration.html#cfn-applicationautoscaling-scalingpolicy-targettrackingscalingpolicyconfiguration-customizedmetricspecification). The default target is **70%** CPU; adjust it in the template:
 
@@ -217,7 +217,7 @@ We load-tested the Guidance against an [AWS Lambda](https://aws.amazon.com/lambd
 | Ingress | Three-zone NLB, DNS round-robin, cross-zone balancing **off** (it performed worse in tests) |
 | Proxy | Three zonal Fargate tasks, 2048 CPU / 4096 MB each |
 
-The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](/load-test/distributed-load-testing-on-aws.template). The results below show each layer in the path: the test harness, the NLB, the proxy (ECS), VPC Lattice, and the Lambda target.
+The harness is the [Distributed Load Testing on AWS](https://aws.amazon.com/solutions/implementations/distributed-load-testing-on-aws/) solution; its template is also [in this repo](load-test/distributed-load-testing-on-aws.template). The results below show each layer in the path: the test harness, the NLB, the proxy (ECS), VPC Lattice, and the Lambda target.
 
 **Harness**
 
