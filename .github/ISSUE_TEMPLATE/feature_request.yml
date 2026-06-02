@@ -1,0 +1,56 @@
+name: 💡 Feature request
+description: Suggest an enhancement or new capability for this Guidance.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please check existing open and recently closed issues first to avoid duplicates.
+
+        For significant work, opening this issue to discuss before sending a pull request is encouraged (see [CONTRIBUTING](../CONTRIBUTING.md)).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case or limitation you're hitting. "I'm always frustrated when ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A clear description of what you'd like to happen.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the Guidance does this relate to?
+      options:
+        - Networking (VPC / PrivateLink endpoints)
+        - Ingress (NLB / ECS Fargate proxy)
+        - Proxy engine (NGINX / Envoy / customizations)
+        - CI/CD (CodePipeline / CodeBuild / CodeCommit / ECR)
+        - DNS resolution
+        - Testing (testing/ folder)
+        - Documentation
+        - Cost / scaling / performance
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you've thought about, and why they fall short.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else, links, diagrams, or references that help explain the request.
+    validations:
+      required: false

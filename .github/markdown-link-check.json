@@ -1,0 +1,16 @@
+{
+  "comment": "Config for the markdown link checker. Internal/relative links are the priority (they break when files move). External links are retried and rate-limit responses are treated as alive to avoid flaky failures from doc sites.",
+  "ignorePatterns": [
+    { "pattern": "^https://gallery.ecr.aws" }
+  ],
+  "httpHeaders": [
+    {
+      "urls": ["https://docs.aws.amazon.com", "https://aws.amazon.com"],
+      "headers": { "Accept": "text/html", "User-Agent": "Mozilla/5.0" }
+    }
+  ],
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "30s",
+  "aliveStatusCodes": [200, 206, 429]
+}

@@ -1,0 +1,12 @@
+# Disable blank issues so reporters pick a structured template.
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security / vulnerability report
+    url: http://aws.amazon.com/security/vulnerability-reporting/
+    about: Do NOT open a public GitHub issue for security findings. Report them privately to AWS/Amazon Security.
+  - name: 📖 Documentation & deployment guide
+    url: https://github.com/aws-solutions-library-samples/guidance-for-external-connectivity-amazon-vpc-lattice#readme
+    about: Check the README (prerequisites, deployment, DNS resolution, cleanup) before filing an issue.
+  - name: ❓ Usage question
+    url: https://repost.aws/
+    about: For general "how do I use VPC Lattice / this Guidance" questions, ask on AWS re:Post.

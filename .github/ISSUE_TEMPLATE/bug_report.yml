@@ -1,0 +1,94 @@
+name: 🐞 Bug report
+description: Report something that isn't working when deploying or running this Guidance.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please check existing open and recently closed issues first to avoid duplicates.
+
+        ⚠️ **Do not report security vulnerabilities here.** Use the [AWS vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/) instead.
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what went wrong versus what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A reproducible series of steps. Include the exact CloudFormation command and any non-default behavior.
+      placeholder: |
+        1. Deployed the stack with `aws cloudformation deploy ...`
+        2. Configured DNS as ...
+        3. Sent a request to ... using `testing/test-endpoint.sh`
+        4. Saw error ...
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy-engine
+    attributes:
+      label: Proxy engine
+      description: Which `ProxyEngine` parameter did you deploy with?
+      options:
+        - nginx (default)
+        - envoy
+        - Not applicable / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment-stage
+    attributes:
+      label: Where does it fail?
+      description: Which layer or phase is affected?
+      options:
+        - Stack deployment (CloudFormation)
+        - Networking (VPC / PrivateLink endpoints)
+        - Ingress (NLB / ECS Fargate proxy)
+        - CI/CD (CodePipeline / CodeBuild / CodeCommit / ECR)
+        - DNS resolution
+        - Connectivity to VPC Lattice service (runtime)
+        - Cleanup / stack deletion
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: region
+    attributes:
+      label: AWS Region
+      placeholder: e.g. us-west-2
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version of the code
+      description: Commit SHA, release tag, or branch of this repo you deployed.
+      placeholder: e.g. main @ abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: modifications
+    attributes:
+      label: Modifications
+      description: Any changes you made to the template, proxy config, or customizations under `proxies/customizations/`.
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment details
+      description: Anything unusual about your environment or deployment (IPv4/IPv6, AZ count, service network association vs. endpoint, hybrid DNS, etc.).
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: CloudFormation events, ECS / Container Insights logs, or command output. This is automatically formatted as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false

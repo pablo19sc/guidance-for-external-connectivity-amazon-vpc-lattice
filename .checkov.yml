@@ -1,0 +1,28 @@
+# Checkov configuration.
+#
+# Checkov (and cfn-nag) scan the raw, un-transformed template. guidance-stack.yml
+# uses the AWS::LanguageExtensions transform (Fn::ForEach), which Checkov cannot
+# expand, so it is excluded here and covered by cfn-lint instead. Security scanning
+# therefore targets the plain CloudFormation under testing/.
+#
+# To scan the main stack's security posture, render the processed template first
+# (e.g. create a change set and `aws cloudformation get-template
+# --template-stage Processed`) and run Checkov against that output.
+
+directory:
+  - testing
+
+# Skipped checks apply to the example/test resources under testing/, which are
+# intentionally minimal demonstration assets, not production workloads:
+#   CKV_AWS_115 - demo Lambda needs no reserved concurrency
+#   CKV_AWS_116 - demo Lambda needs no dead-letter queue
+#   CKV_AWS_117 - demo Lambda is intentionally not VPC-attached
+#   CKV_AWS_158 - test log groups use default encryption (no CMK)
+skip-check:
+  - CKV_AWS_115
+  - CKV_AWS_116
+  - CKV_AWS_117
+  - CKV_AWS_158
+
+compact: true
+quiet: true
